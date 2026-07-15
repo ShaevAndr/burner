@@ -1,0 +1,59 @@
+#ifndef DEVICE_WORKBENCH_MAIN_WINDOW_H
+#define DEVICE_WORKBENCH_MAIN_WINDOW_H
+
+#include "service_container.h"
+
+#include <QComboBox>
+#include <QLineEdit>
+#include <QMainWindow>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QTableWidget>
+
+class MainWindow : public QMainWindow
+{
+    Q_OBJECT
+public:
+    explicit MainWindow(ServiceContainer* services, QWidget* parent = nullptr);
+
+private slots:
+    void startDiscovery();
+    void onDeviceFound(DeviceIdentity device);
+    void onDiscoveryFinished();
+    void updateLineMode();
+    void updateBulkMenu();
+    void runActionForRow(int row, const QString& actionId);
+    void appendLog(const QString& message);
+
+private:
+    void buildUi();
+    QWidget* buildSidebar();
+    QWidget* buildDiscoveryPanel();
+    QWidget* buildTablePanel();
+    void addDeviceRow(const DeviceIdentity& device);
+    QVector<DeviceIdentity> selectedDevices() const;
+    ActionSpec actionById(const QString& actionId) const;
+    void rebuildBulkMenu();
+    void setBusy(bool busy);
+
+    ServiceContainer* mServices = nullptr;
+    QVector<DeviceIdentity> mDevices;
+
+    QComboBox* mLineMode = nullptr;
+    QComboBox* mNetworkInterface = nullptr;
+    QComboBox* mUdpProtocol = nullptr;
+    QWidget* mUdpPanel = nullptr;
+    QComboBox* mSerialPort = nullptr;
+    QComboBox* mRs485Protocol = nullptr;
+    QLineEdit* mAddressStart = nullptr;
+    QLineEdit* mAddressEnd = nullptr;
+    QWidget* mRs485Panel = nullptr;
+    QPushButton* mSearchButton = nullptr;
+    QLineEdit* mSearch = nullptr;
+    QPushButton* mBulkButton = nullptr;
+    QMenu* mBulkMenu = nullptr;
+    QTableWidget* mTable = nullptr;
+    QPlainTextEdit* mLog = nullptr;
+};
+
+#endif // DEVICE_WORKBENCH_MAIN_WINDOW_H

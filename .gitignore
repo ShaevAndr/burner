@@ -1,0 +1,15 @@
+# Build artifacts
+app/.qmake.stash
+app/Makefile
+app/*.o
+app/moc_*.cpp
+app/moc_*.o
+app/moc_predefs.h
+app/device-workbench
+
+# Reference application copied/provided for analysis, not part of this app.
+unicorn/
+
+# Editor and OS noise
+.DS_Store
+*.user

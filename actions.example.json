@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "actions": [
+    {
+      "id": "flash.application.write",
+      "title": "Записать application flash",
+      "selection": "many",
+      "dangerLevel": "high",
+      "when": {
+        "capabilitiesAll": ["flash.application.write"]
+      },
+      "inputs": [
+        {
+          "name": "artifact",
+          "type": "firmwareArtifact",
+          "target": "application",
+          "required": true
+        },
+        {
+          "name": "verifyAfterWrite",
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "workflow": "flash.write"
+    },
+    {
+      "id": "flash.bootloader.write",
+      "title": "Записать bootloader flash",
+      "selection": "many",
+      "dangerLevel": "high",
+      "when": {
+        "capabilitiesAll": ["flash.bootloader.write"]
+      },
+      "inputs": [
+        {
+          "name": "artifact",
+          "type": "firmwareArtifact",
+          "target": "bootloader",
+          "required": true
+        },
+        {
+          "name": "verifyAfterWrite",
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "workflow": "flash.write"
+    }
+  ]
+}

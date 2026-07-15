@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Device Workbench Concept</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --panel-2: #eef3f6;
+      --line: #d8e0e5;
+      --text: #17212b;
+      --muted: #667584;
+      --blue: #2563eb;
+      --green: #15803d;
+      --red: #b42318;
+      --amber: #a15c07;
+      --teal: #0f766e;
+      --ink: #25313f;
+      --shadow: 0 12px 28px rgba(31, 43, 55, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.45;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+    }
+
+    aside {
+      background: #17212b;
+      color: #d9e1e8;
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 44px;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #7dd3fc, #22c55e);
+      display: grid;
+      place-items: center;
+      color: #0f172a;
+      font-weight: 800;
+    }
+
+    .brand strong {
+      display: block;
+      color: #ffffff;
+      font-size: 15px;
+    }
+
+    .brand span {
+      color: #9fb0bf;
+      font-size: 12px;
+    }
+
+    nav {
+      display: grid;
+      gap: 5px;
+    }
+
+    .nav-item {
+      border: 0;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 11px;
+      border-radius: 7px;
+      color: #d9e1e8;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .nav-item.active,
+    .nav-item:hover {
+      background: rgba(255,255,255,0.08);
+      color: #ffffff;
+    }
+
+    .nav-icon {
+      width: 19px;
+      height: 19px;
+      display: inline-grid;
+      place-items: center;
+      font-size: 14px;
+    }
+
+    .side-block {
+      border-top: 1px solid rgba(255,255,255,0.12);
+      padding-top: 16px;
+      display: grid;
+      gap: 11px;
+      color: #9fb0bf;
+      font-size: 13px;
+    }
+
+    .health-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .health-row strong {
+      color: #f8fafc;
+      font-weight: 600;
+    }
+
+    main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .title h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .title p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .btn {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 12px;
+      background: #ffffff;
+      color: var(--ink);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .btn.primary {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #ffffff;
+    }
+
+    .btn.danger {
+      border-color: #fecaca;
+      background: #fff5f5;
+      color: var(--red);
+    }
+
+    .icon-btn {
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      justify-content: center;
+    }
+
+    .content {
+      padding: 20px 22px 24px;
+      display: block;
+      min-width: 0;
+    }
+
+    .work-area {
+      min-width: 0;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .band {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .scan-panel {
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .scan-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr auto;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .scan-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mode-panel {
+      display: grid;
+      gap: 12px;
+    }
+
+    .is-hidden {
+      display: none;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 10px;
+      background: #ffffff;
+      color: var(--text);
+    }
+
+    .filters {
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+      border-radius: 8px 8px 0 0;
+    }
+
+    .table-title {
+      display: grid;
+      gap: 2px;
+    }
+
+    .table-title strong {
+      font-size: 14px;
+    }
+
+    .table-title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .bulk-menu {
+      position: relative;
+    }
+
+    .bulk-menu summary {
+      list-style: none;
+    }
+
+    .bulk-menu summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .bulk-popover {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 10;
+      width: 230px;
+      padding: 8px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 4px;
+    }
+
+    .menu-item {
+      border: 0;
+      border-radius: 7px;
+      min-height: 34px;
+      background: transparent;
+      padding: 0 9px;
+      text-align: left;
+      cursor: pointer;
+      color: var(--ink);
+    }
+
+    .menu-item:hover {
+      background: var(--panel-2);
+    }
+
+    .segmented {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .segment {
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      min-height: 32px;
+      padding: 0 10px;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .segment:last-child { border-right: 0; }
+    .segment.active {
+      background: var(--ink);
+      color: #ffffff;
+    }
+
+    .search {
+      max-width: 260px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+      font-size: 13px;
+    }
+
+    th {
+      color: var(--muted);
+      background: #fbfcfd;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    tr.selected {
+      background: #edf5ff;
+    }
+
+    .check-col { width: 42px; }
+    .type-col { width: 88px; }
+    .fw-col { width: 82px; }
+    .status-col { width: 138px; }
+    .actions-col { width: 154px; }
+    .channel-col { width: 210px; }
+
+    .device {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .device strong,
+    .device span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .device span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .description-cell {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 999px;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tag.ok { color: var(--green); background: #dcfce7; }
+    .tag.warn { color: var(--amber); background: #fef3c7; }
+    .tag.off { color: var(--red); background: #fee2e2; }
+    .tag.info { color: var(--teal); background: #ccfbf1; }
+
+    .row-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .mini {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      border-radius: 7px;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+    }
+
+    .mini.danger {
+      color: var(--red);
+      border-color: #fecaca;
+      background: #fff5f5;
+    }
+
+    @media (max-width: 1080px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+      }
+
+      nav {
+        grid-auto-flow: column;
+        grid-auto-columns: max-content;
+      }
+
+      .side-block {
+        display: none;
+      }
+
+      .content {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      header,
+      .filters,
+      .scan-panel {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .scan-grid {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        display: grid;
+      }
+
+      .toolbar {
+        justify-content: flex-start;
+      }
+
+      .content {
+        padding: 14px;
+      }
+
+      table,
+      thead,
+      tbody,
+      tr,
+      th,
+      td {
+        display: block;
+      }
+
+      thead {
+        display: none;
+      }
+
+      tr {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 0;
+      }
+
+      td {
+        border: 0;
+        padding: 6px 14px;
+      }
+
+      .check-col,
+      .status-col,
+      .fw-col,
+      .actions-col {
+        width: auto;
+      }
+
+      .bulk-popover {
+        left: 0;
+        right: auto;
+      }
+
+      .row-actions {
+        justify-content: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand" aria-label="Device Workbench">
+        <div class="brand-mark">DW</div>
+        <div>
+          <strong>Device Workbench</strong>
+          <span>UDP / RS-485</span>
+        </div>
+      </div>
+
+      <nav aria-label="Разделы">
+        <button class="nav-item active"><span class="nav-icon">⌁</span> Обнаружение</button>
+        <button class="nav-item"><span class="nav-icon">⇧</span> Прошивки</button>
+      </nav>
+    </aside>
+
+    <main>
+      <header>
+        <div class="title">
+          <h1>Обнаружение и обслуживание устройств</h1>
+          <p>Выбор линии связи, протокола и последовательный поиск устройств только в текущем контексте.</p>
+        </div>
+        <div class="toolbar">
+          <button class="btn">⟳ Обновить</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="work-area">
+          <section class="band scan-panel" aria-label="Параметры сканирования">
+            <div class="scan-grid">
+              <div class="field">
+                <label for="line-mode">Линия связи</label>
+                <select id="line-mode">
+                  <option value="udp" selected>UDP broadcast</option>
+                  <option value="rs485">RS-485</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="scan-grid mode-panel" id="udp-panel">
+              <div class="field">
+                <label for="interface">Сетевой интерфейс</label>
+                <select id="interface">
+                  <option>eth0 · 192.168.1.20 · broadcast 192.168.1.255</option>
+                  <option>wlan0 · 10.0.4.12 · broadcast 10.0.4.255</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="tcp-profile">Профиль протокола</label>
+                <select id="tcp-profile">
+                  <option>AtomDevices · identity 0xFF · wait 1500 ms</option>
+                </select>
+              </div>
+              <button class="btn primary">⌕ Broadcast поиск</button>
+            </div>
+            <p class="scan-note">UDP broadcast: отправить команду запроса типа и описания устройства, затем собрать готовые ответы.</p>
+
+            <div class="scan-grid mode-panel is-hidden" id="rs485-panel">
+              <div class="field">
+                <label for="serial">RS-485 линия</label>
+                <select id="serial">
+                  <option>COM3 / 115200 / 8N1</option>
+                  <option>COM4 / 57600 / 8N1</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="rs485-profile">Протокол</label>
+                <select id="rs485-profile">
+                  <option>AtomDevices · identity 0xFF</option>
+                  <option>Modbus RTU · read identity</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="address-start">Адрес старта</label>
+                <input id="address-start" value="1">
+              </div>
+              <div class="field">
+                <label for="address-end">Адрес конца</label>
+                <input id="address-end" value="64">
+              </div>
+              <button class="btn">⌕ Поиск RS-485</button>
+            </div>
+          </section>
+
+          <section class="band">
+            <div class="filters">
+              <div class="table-title">
+                <strong>Устройства текущего поиска</strong>
+                <span>UDP broadcast · AtomDevices · eth0 · 3 ответа</span>
+              </div>
+              <div class="toolbar">
+                <input class="search" aria-label="Поиск" value="AtomDevices">
+                <details class="bulk-menu">
+                  <summary class="btn primary">☰ Действия выбранных</summary>
+                  <div class="bulk-popover" role="menu">
+                    <button class="menu-item">flash.application.write</button>
+                    <button class="menu-item">flash.bootloader.write</button>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <table aria-label="Найденные устройства">
+              <thead>
+                <tr>
+                  <th class="check-col"><input type="checkbox" checked aria-label="Выбрать все"></th>
+                  <th>Устройство</th>
+                  <th class="channel-col">Канал</th>
+                  <th class="type-col">Тип</th>
+                  <th class="fw-col">Версия</th>
+                  <th>Короткое описание</th>
+                  <th class="status-col">Статус</th>
+                  <th class="actions-col">Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="selected">
+                  <td class="check-col"><input type="checkbox" checked aria-label="Выбрать AD-042"></td>
+                  <td>
+                    <div class="device">
+                      <strong>AD-042 Motor Controller</strong>
+                      <span>UUID 7d58-19a0 · 8 float, 6 int, 12 telemetry</span>
+                    </div>
+                  </td>
+                  <td>UDP 192.168.1.255 → 192.168.1.44</td>
+                  <td>0x0031</td>
+                  <td>1.8.2</td>
+                  <td class="description-cell" title="JSON ожидает: AD-042 Motor Controller">AD-042 Motor Ctrl rev A</td>
+                  <td><span class="tag warn">можно обновить</span></td>
+                  <td>
+                    <div class="row-actions">
+                      <button class="mini" title="flash.application.write" aria-label="flash.application.write AD-042">A</button>
+                      <button class="mini danger" title="flash.bootloader.write" aria-label="flash.bootloader.write AD-042">B</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="selected">
+                  <td class="check-col"><input type="checkbox" checked aria-label="Выбрать AD-052"></td>
+                  <td>
+                    <div class="device">
+                      <strong>AD-052 Sensor Node</strong>
+                      <span>UUID 1aa2-77cd · 4 float, 2 int, 8 telemetry</span>
+                    </div>
+                  </td>
+                  <td>UDP 192.168.1.255 → 192.168.1.52</td>
+                  <td>0x0038</td>
+                  <td>1.9.0</td>
+                  <td class="description-cell">AD-052 Sensor Node</td>
+                  <td><span class="tag ok">актуально</span></td>
+                  <td>
+                    <div class="row-actions">
+                      <button class="mini" title="flash.application.write" aria-label="flash.application.write AD-052">A</button>
+                      <button class="mini danger" title="flash.bootloader.write" aria-label="flash.bootloader.write AD-052">B</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="check-col"><input type="checkbox" aria-label="Выбрать AD-021"></td>
+                  <td>
+                    <div class="device">
+                      <strong>AD-021 Power Board</strong>
+                      <span>UUID 55b1-0c29 · identity only</span>
+                    </div>
+                  </td>
+                  <td>UDP 192.168.1.255 → 192.168.1.86</td>
+                  <td>0x0021</td>
+                  <td>1.4.1</td>
+                  <td class="description-cell" title="JSON ожидает: AD-021 Power Board">AD-021 Bootloader</td>
+                  <td><span class="tag warn">можно обновить</span></td>
+                  <td>
+                    <div class="row-actions">
+                      <button class="mini" title="flash.application.write" aria-label="flash.application.write AD-021">A</button>
+                      <button class="mini danger" title="flash.bootloader.write" aria-label="flash.bootloader.write AD-021">B</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const lineMode = document.querySelector("#line-mode");
+    const udpPanel = document.querySelector("#udp-panel");
+    const rs485Panel = document.querySelector("#rs485-panel");
+
+    lineMode.addEventListener("change", () => {
+      const isRs485 = lineMode.value === "rs485";
+      udpPanel.classList.toggle("is-hidden", isRs485);
+      rs485Panel.classList.toggle("is-hidden", !isRs485);
+    });
+  </script>
+</body>
+</html>

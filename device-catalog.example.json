@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "deviceTypes": [
+    {
+      "id": "atom.ad042",
+      "protocol": "atom-dev",
+      "type": "0x0031",
+      "name": "AD-042 Motor Controller",
+      "description": "Контроллер двигателя AtomDevices",
+      "expectedDescription": "AD-042 Motor Controller",
+      "firmware": {
+        "latest": "1.9.0",
+        "artifacts": [
+          {
+            "version": "1.9.0",
+            "file": "firmware/ad042/1.9.0/app.bin",
+            "sha256": "replace-with-real-hash",
+            "target": "app-main"
+          }
+        ]
+      },
+      "capabilities": [
+        "identity.read",
+        "flash.application.write",
+        "flash.bootloader.write"
+      ],
+      "flashWorkflows": {
+        "application": "flash.write",
+        "bootloader": "flash.write"
+      },
+      "deviceClass": "Ad042Device"
+    },
+    {
+      "id": "atom.ad052",
+      "protocol": "atom-dev",
+      "type": "0x0038",
+      "name": "AD-052 Sensor Node",
+      "description": "Сенсорный модуль AtomDevices",
+      "expectedDescription": "AD-052 Sensor Node",
+      "firmware": {
+        "latest": "1.9.0",
+        "artifacts": []
+      },
+      "capabilities": [
+        "identity.read",
+        "flash.application.write",
+        "flash.bootloader.write"
+      ],
+      "flashWorkflows": {
+        "application": "flash.write",
+        "bootloader": "flash.write"
+      },
+      "deviceClass": "Ad052Device"
+    },
+    {
+      "id": "atom.ad021",
+      "protocol": "atom-dev",
+      "type": "0x0021",
+      "name": "AD-021 Power Board",
+      "description": "Плата питания AtomDevices",
+      "expectedDescription": "AD-021 Power Board",
+      "firmware": {
+        "latest": "1.5.0",
+        "artifacts": [
+          {
+            "version": "1.5.0",
+            "file": "firmware/ad021/1.5.0/app.bin",
+            "sha256": "replace-with-real-hash",
+            "target": "app-main"
+          }
+        ]
+      },
+      "capabilities": [
+        "identity.read",
+        "flash.application.write",
+        "flash.bootloader.write"
+      ],
+      "flashWorkflows": {
+        "application": "flash.write",
+        "bootloader": "flash.write"
+      },
+      "deviceClass": "Ad021Device"
+    },
+    {
+      "id": "atom.ad110",
+      "protocol": "atom-dev",
+      "type": "0x0047",
+      "name": "AD-110 Telemetry Gateway",
+      "description": "Шлюз телеметрии AtomDevices",
+      "expectedDescription": "AD-110 Telemetry Gateway",
+      "firmware": {
+        "latest": "2.0.0",
+        "artifacts": []
+      },
+      "capabilities": [
+        "identity.read",
+        "flash.application.write",
+        "flash.bootloader.write"
+      ],
+      "flashWorkflows": {
+        "application": "flash.write",
+        "bootloader": "flash.write"
+      },
+      "deviceClass": "Ad110Device"
+    },
+    {
+      "id": "generic.modbus.io16",
+      "protocol": "modbus-rtu",
+      "type": "io-16",
+      "name": "Modbus IO Module",
+      "description": "Профиль дискретного модуля ввода-вывода",
+      "expectedDescription": "Modbus IO Module",
+      "registerMap": "register-maps/io-16.json",
+      "capabilities": [
+        "flash.application.write",
+        "flash.bootloader.write"
+      ],
+      "flashWorkflows": {
+        "application": "flash.write",
+        "bootloader": "flash.write"
+      },
+      "deviceClass": "GenericModbusIo16Device"
+    }
+  ]
+}
