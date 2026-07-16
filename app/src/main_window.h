@@ -1,6 +1,7 @@
 #ifndef DEVICE_WORKBENCH_MAIN_WINDOW_H
 #define DEVICE_WORKBENCH_MAIN_WINDOW_H
 
+#include "device.h"
 #include "service_container.h"
 
 #include <QComboBox>

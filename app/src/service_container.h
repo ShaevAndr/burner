@@ -5,6 +5,7 @@
 #include "catalog.h"
 #include "discovery.h"
 #include "workflow.h"
+#include "workflow_definition.h"
 
 #include <QObject>
 
@@ -15,9 +16,11 @@ public:
     explicit ServiceContainer(QObject* parent = nullptr);
 
     bool loadConfig(QString* error = nullptr);
+    bool reloadWorkflows(QString* error = nullptr);
 
     CatalogService& catalog() { return mCatalog; }
     ActionRepository& actions() { return mActions; }
+    WorkflowRepository& workflows() { return mWorkflows; }
     WorkflowRunner& workflow() { return mWorkflow; }
     UdpBroadcastDiscovery& udpDiscovery() { return mUdpDiscovery; }
     Rs485Discovery& rs485Discovery() { return mRs485Discovery; }
@@ -27,6 +30,7 @@ private:
 
     CatalogService mCatalog;
     ActionRepository mActions;
+    WorkflowRepository mWorkflows;
     WorkflowRunner mWorkflow;
     UdpBroadcastDiscovery mUdpDiscovery;
     Rs485Discovery mRs485Discovery;

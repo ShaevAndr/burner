@@ -95,7 +95,17 @@ void MainWindow::buildUi()
     title->addWidget(subtitle);
     header->addLayout(title);
     header->addStretch();
-    QPushButton* refresh = new QPushButton(QStringLiteral("Обновить"));
+    QPushButton* refresh = new QPushButton(QStringLiteral("Обновить сценарии"));
+    connect(refresh, &QPushButton::clicked, this, [this]() {
+        QString error;
+        if (!mServices->reloadWorkflows(&error))
+        {
+            appendLog(QStringLiteral("Workflow reload failed: %1").arg(error));
+            QMessageBox::warning(this, QStringLiteral("Сценарии"), error);
+            return;
+        }
+        appendLog(QStringLiteral("Workflow scenarios reloaded"));
+    });
     header->addWidget(refresh);
     mFlashProgress = new QProgressBar;
     mFlashProgress->setRange(0, 100);

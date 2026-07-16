@@ -169,13 +169,21 @@ IActionPolicy
 IWorkflowRunner
   run(action, devices, inputs) -> Job
 
+WorkflowRepository
+  load(config/workflows.json)
+  get(action.workflow) -> WorkflowDefinition
+
 DeviceBase
-  readIdentity()
-  getFlashWorkflow(target) -> FlashWorkflow
-  prepareFlashWrite(target, artifact)
-  writeFlash(target, artifact, progress)
-  verifyFlash(target, artifact)
-  afterFlashWrite(target)
+  operation(key) -> DeviceOperation
+  reset()
+  loadApplication()
+  readInt(index)
+  writeInt(index, value)
+
+BocV12Device
+  disableLoadApplication()
+  writeProductionDate(timestamp)
+  writeSerialNumber(serialNumber)
 ```
 
 Для UDP broadcast может быть отдельный транспорт или discovery-сервис:
@@ -199,11 +207,7 @@ UdpBroadcastDiscovery
 
 ```text
 DeviceBase
-  Ad042Device
-  Ad052Device
-  Ad021Device
-  Ad110Device
-  GenericModbusIo16Device
+  BocV12Device
 ```
 
 Команды `flash.application.write` и `flash.bootloader.write` могут использовать

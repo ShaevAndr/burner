@@ -84,23 +84,41 @@ capabilities.
 
 `DeviceBase`
 
-Базовый класс устройства. Он задает общий контракт flash workflow:
+Базовый класс устройства хранит identity и дает только атомарный доступ к
+транспорту:
 
-- `flashPlan`
-- `beforeFlashWrite`
-- `afterFlashWrite`
+- `reset`
+- `loadApplication`
+- `disableLoadApplication`
+- `writeProductionDate`
+- `writeSerialNumber`
+- `writeInt`
+- `readInt`
 
-Конкретные классы (`Ad042Device`, `Ad052Device`, `Ad021Device`) наследуются от
-него и переопределяют device-specific параметры: размер страницы, диапазон
-страниц, ограничения bootloader/application.
+Конкретный класс `BocV12Device` наследуется от него и переопределяет
+поддерживаемые атомарные задачи БОЦ-В-12.
+
+Код устройств разнесен по файлам: базовый контракт находится в
+`src/base_device.h/.cpp`, фабрика в `src/device.h/.cpp`, конкретные устройства
+в `src/devices/*_device.h/.cpp`.
 
 `WorkflowRunner`
 
-Запускает action для одного или нескольких устройств. Сейчас workflow безопасно
-логирует шаги, находит firmware artifact по `target`, считает SHA-256 файла и
-сравнивает его с каталогом. Запись flash в железо пока не отправляется. Это
-сделано намеренно: следующий этап должен подключить реальную
-transport/protocol реализацию и preflight перед записью.
+Исполняет action для одного или нескольких устройств. Порядок шагов не зашит в
+runner: workflow описаны в `config/workflows.json` как список атомарных
+операций `op`. `WorkflowRepository` из `src/workflow_definition.h/.cpp`
+загружает этот JSON, runner создает `WorkflowExecution` и вызывает
+`next(device)`, а уже `next` интерпретирует текущий шаг и вызывает операцию
+устройства по ключу. Конкретный класс устройства выбирается раньше, на этапе
+фабрики.
+
+Кнопка `Обновить сценарии` перечитывает `config/workflows.json` во время работы
+приложения. Если новый JSON невалиден, активные сценарии не заменяются.
+
+Для flash workflow runner безопасно логирует шаги, находит firmware artifact по
+`target`, считает SHA-256 файла и сравнивает его с каталогом. Запись flash в
+железо пока не отправляется. Это сделано намеренно: следующий этап должен
+подключить реальную transport/protocol реализацию и preflight перед записью.
 
 ## Поток данных
 
@@ -110,9 +128,10 @@ transport/protocol реализацию и preflight перед записью.
 4. `CatalogService` обогащает устройство данными из JSON.
 5. `ActionRepository` вычисляет доступные команды.
 6. `MainWindow` рисует строку таблицы и кнопки `A`/`B`.
-7. При запуске команды `WorkflowRunner` создает конкретный `DeviceBase` класс
-   через `DeviceFactory`.
-8. Device-specific класс возвращает план выполнения `flash.write`.
+7. При обнаружении устройства `MainWindow` создает конкретный `DeviceBase`
+   класс через `DeviceFactory`.
+8. При запуске команды `WorkflowRunner` находит workflow из
+   `config/workflows.json` и исполняет его шаги через операции `DeviceBase`.
 9. `WorkflowRunner` проверяет файл прошивки и его SHA-256.
 
 ## Сборка

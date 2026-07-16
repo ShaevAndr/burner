@@ -1,8 +1,9 @@
 #ifndef DEVICE_WORKBENCH_WORKFLOW_H
 #define DEVICE_WORKBENCH_WORKFLOW_H
 
-#include "device.h"
+#include "base_device.h"
 #include "device_transport.h"
+#include "workflow_definition.h"
 
 #include <QObject>
 #include <QVariantMap>
@@ -12,7 +13,8 @@ class WorkflowRunner : public QObject
 {
     Q_OBJECT
 public:
-    explicit WorkflowRunner(QObject* parent = nullptr);
+    explicit WorkflowRunner(WorkflowRepository* workflows = nullptr, QObject* parent = nullptr);
+    void setWorkflowRepository(WorkflowRepository* workflows);
 
     void run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters = {});
 
@@ -21,6 +23,8 @@ signals:
     void transportLogMessage(QString message);
     void progressChanged(int percent);
 
+private:
+    WorkflowRepository* mWorkflows = nullptr;
 };
 
 #endif // DEVICE_WORKBENCH_WORKFLOW_H

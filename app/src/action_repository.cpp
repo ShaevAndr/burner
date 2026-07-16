@@ -1,5 +1,5 @@
 #include "action_repository.h"
-#include "device.h"
+#include "base_device.h"
 
 #include <QFile>
 #include <QJsonArray>

@@ -12,6 +12,7 @@
 
 #include "../src/action_repository.h"
 #include "../src/catalog.h"
+#include "../src/device.h"
 #include "../src/transport/unicorn_ascii_transport.h"
 #include "../src/workflow.h"
 
@@ -215,7 +216,10 @@ void DeviceWorkbenchTest::workflowEmitsProgressForTestFlash()
     auto deviceObject = factory.create(device);
     QVERIFY(deviceObject);
 
-    WorkflowRunner runner;
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
     runner.run(action, {deviceObject});
 
@@ -260,7 +264,10 @@ void DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
     auto deviceObject = factory.create(device);
     QVERIFY(deviceObject);
 
-    WorkflowRunner runner;
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
     QSignalSpy progressSpy(&runner, &WorkflowRunner::progressChanged);
 
@@ -268,8 +275,8 @@ void DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
 
     bool sawBootloader = false;
     bool sawTimestampWrite = false;
+    bool sawLoadApplication = false;
     int int0Writes = 0;
-    int int1Writes = 0;
     for (const QList<QVariant>& row : logSpy)
     {
         if (row.isEmpty())
@@ -281,15 +288,17 @@ void DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
             sawTimestampWrite = true;
         if (message.contains(QStringLiteral("int[0] = 0")))
             ++int0Writes;
-        if (message.contains(QStringLiteral("int[0] = 1")))
-            ++int1Writes;
+        if (message.contains(QStringLiteral("load main application")))
+            sawLoadApplication = true;
     }
 
     QVERIFY(sawBootloader);
     QVERIFY(sawTimestampWrite);
+    QVERIFY(sawLoadApplication);
     QCOMPARE(int0Writes, 1);
-    QCOMPARE(int1Writes, 1);
-    QVERIFY(progressSpy.count() >= 5);
+    QCOMPARE(progressSpy.count(), 9);
+    QCOMPARE(progressSpy.first().at(0).toInt(), 11);
+    QCOMPARE(progressSpy.last().at(0).toInt(), 100);
     QCOMPARE(transport->writes.size(), 3);
 }
 
@@ -316,7 +325,10 @@ void DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
     auto deviceObject = factory.create(device);
     QVERIFY(deviceObject);
 
-    WorkflowRunner runner;
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
 
     runner.run(action, {deviceObject}, QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 7, 16)}});
 
@@ -379,7 +391,10 @@ void DeviceWorkbenchTest::workflowWritesSerialNumberRegisterInBootloader()
     auto deviceObject = factory.create(device);
     QVERIFY(deviceObject);
 
-    WorkflowRunner runner;
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
 
     runner.run(action, {deviceObject}, QVariantMap{{QStringLiteral("serialNumber"), 915}});
 
