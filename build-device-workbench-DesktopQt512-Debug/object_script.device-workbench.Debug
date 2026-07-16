@@ -1,0 +1,13 @@
+debug/action_repository.o
+debug/catalog.o
+debug/device.o
+debug/discovery.o
+debug/main.o
+debug/main_window.o
+debug/service_container.o
+debug/unicorn_ascii_transport.o
+debug/workflow.o
+debug/moc_discovery.o
+debug/moc_main_window.o
+debug/moc_service_container.o
+debug/moc_workflow.o

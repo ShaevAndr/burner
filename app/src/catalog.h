@@ -11,10 +11,11 @@ class CatalogService
 public:
     bool load(const QString& fileName, QString* error = nullptr);
     DeviceIdentity enrich(DeviceIdentity device) const;
-    bool isLoaded() const { return !mEntriesByType.isEmpty(); }
+    bool isLoaded() const { return !mEntriesByTypeVersion.isEmpty(); }
 
 private:
-    QHash<quint16, CatalogEntry> mEntriesByType;
+    const CatalogEntry* entryForDevice(const DeviceIdentity& device) const;
+    QHash<quint32, CatalogEntry> mEntriesByTypeVersion;
 };
 
 #endif // DEVICE_WORKBENCH_CATALOG_H

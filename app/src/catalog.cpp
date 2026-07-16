@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 
 static quint16 parseType(const QString& raw)
 {
@@ -12,6 +13,42 @@ static quint16 parseType(const QString& raw)
     const int base = trimmed.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive) ? 16 : 10;
     const uint value = trimmed.toUInt(&ok, base);
     return ok ? quint16(value & 0xFFFF) : 0;
+}
+
+static quint32 catalogKey(quint16 type, quint16 version)
+{
+    return (quint32(type) << 16) | quint32(version);
+}
+
+static QRegularExpression descriptionPatternToRegex(const QString& pattern)
+{
+    QString regex = QRegularExpression::escape(pattern.trimmed());
+    regex.replace(QStringLiteral("\\{boot\\}"), QStringLiteral("(?: \\(Boot\\))?"));
+    regex.replace(QStringLiteral("\\{year\\}"), QStringLiteral("\\d{4}"));
+    regex.replace(QStringLiteral("\\{quarter\\}"), QStringLiteral("[IVX]+"));
+    regex.replace(QStringLiteral("\\{serial\\}"), QStringLiteral("\\d+"));
+    regex.replace(QStringLiteral("\\{sw\\}"), QStringLiteral(".+"));
+    return QRegularExpression(QStringLiteral("^%1$").arg(regex));
+}
+
+static bool descriptionContainsBoot(const QString& description)
+{
+    static const QRegularExpression bootPattern(QStringLiteral("\\(\\s*Boot\\s*\\)"), QRegularExpression::CaseInsensitiveOption);
+    return bootPattern.match(description).hasMatch();
+}
+
+static QString deviceStateFor(const DeviceIdentity& device, const CatalogEntry* entry)
+{
+    const bool hasBootMarker = descriptionContainsBoot(device.description);
+    if (!entry)
+        return hasBootMarker ? QStringLiteral("bootloader") : QStringLiteral("application");
+
+    const bool matchesBootloaderIdentity = entry->bootloaderType != 0
+        && device.type == entry->bootloaderType
+        && device.version == entry->bootloaderVersion;
+    return (matchesBootloaderIdentity && hasBootMarker)
+        ? QStringLiteral("bootloader")
+        : QStringLiteral("application");
 }
 
 bool CatalogService::load(const QString& fileName, QString* error)
@@ -32,7 +69,7 @@ bool CatalogService::load(const QString& fileName, QString* error)
         return false;
     }
 
-    mEntriesByType.clear();
+    mEntriesByTypeVersion.clear();
     const QJsonArray devices = doc.object().value(QStringLiteral("deviceTypes")).toArray();
     for (const QJsonValue& value : devices)
     {
@@ -41,8 +78,12 @@ bool CatalogService::load(const QString& fileName, QString* error)
         entry.id = obj.value(QStringLiteral("id")).toString();
         entry.protocol = obj.value(QStringLiteral("protocol")).toString();
         entry.type = parseType(obj.value(QStringLiteral("type")).toString());
+        entry.version = parseType(obj.value(QStringLiteral("version")).toString());
+        entry.bootloaderType = parseType(obj.value(QStringLiteral("bootloaderType")).toString());
+        entry.bootloaderVersion = parseType(obj.value(QStringLiteral("bootloaderVersion")).toString());
         entry.name = obj.value(QStringLiteral("name")).toString();
         entry.expectedDescription = obj.value(QStringLiteral("expectedDescription")).toString(entry.name);
+        entry.expectedDescriptionPattern = obj.value(QStringLiteral("expectedDescriptionPattern")).toString(entry.expectedDescription);
         entry.deviceClass = obj.value(QStringLiteral("deviceClass")).toString(QStringLiteral("DeviceBase"));
 
         const QJsonArray capabilities = obj.value(QStringLiteral("capabilities")).toArray();
@@ -67,14 +108,27 @@ bool CatalogService::load(const QString& fileName, QString* error)
         }
 
         if (entry.type != 0)
-            mEntriesByType.insert(entry.type, entry);
+            mEntriesByTypeVersion.insert(catalogKey(entry.type, entry.version), entry);
+        if (entry.bootloaderType != 0)
+            mEntriesByTypeVersion.insert(catalogKey(entry.bootloaderType, entry.bootloaderVersion), entry);
     }
     return true;
 }
 
+const CatalogEntry* CatalogService::entryForDevice(const DeviceIdentity& device) const
+{
+    const auto direct = mEntriesByTypeVersion.constFind(catalogKey(device.type, device.version));
+    if (direct != mEntriesByTypeVersion.constEnd())
+        return &direct.value();
+
+    return nullptr;
+}
+
 DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
 {
-    if (!mEntriesByType.contains(device.type))
+    const CatalogEntry* entry = entryForDevice(device);
+    device.state = deviceStateFor(device, entry);
+    if (!entry)
     {
         device.known = false;
         device.name = QStringLiteral("Unknown device");
@@ -82,16 +136,18 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
         return device;
     }
 
-    const CatalogEntry entry = mEntriesByType.value(device.type);
     device.known = true;
-    device.catalogId = entry.id;
-    device.name = entry.name;
-    device.expectedDescription = entry.expectedDescription;
-    device.deviceClass = entry.deviceClass;
-    device.capabilities = entry.capabilities;
-    device.flashWorkflows = entry.flashWorkflows;
-    device.firmwareArtifacts = entry.firmwareArtifacts;
-    device.descriptionMismatch = (device.description.trimmed() != entry.expectedDescription.trimmed());
+    device.catalogId = entry->id;
+    device.name = entry->name;
+    device.expectedDescription = entry->expectedDescription;
+    device.expectedDescriptionPattern = entry->expectedDescriptionPattern;
+    device.deviceClass = entry->deviceClass;
+    device.capabilities = entry->capabilities;
+    device.flashWorkflows = entry->flashWorkflows;
+    device.firmwareArtifacts = entry->firmwareArtifacts;
+    const QRegularExpression pattern = descriptionPatternToRegex(entry->expectedDescriptionPattern);
+    const bool matchesPattern = pattern.isValid() && pattern.match(device.description.trimmed()).hasMatch();
+    device.descriptionMismatch = !matchesPattern;
     device.status = device.descriptionMismatch ? QStringLiteral("можно обновить") : QStringLiteral("актуально");
     return device;
 }

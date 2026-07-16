@@ -13,10 +13,52 @@ static const int kDescriptionSize = 100;
 static const int kSerialOffset = 116;
 static const int kSerialSize = 40;
 
-static QString zeroTerminatedCp1251(const QByteArray& bytes)
+static bool isValidUtf8(const QByteArray& bytes)
+{
+    for (int i = 0; i < bytes.size(); )
+    {
+        const quint8 c = static_cast<quint8>(bytes.at(i));
+        if (c < 0x80)
+        {
+            ++i;
+            continue;
+        }
+
+        int length = 0;
+        if ((c & 0xE0) == 0xC0)
+            length = 2;
+        else if ((c & 0xF0) == 0xE0)
+            length = 3;
+        else if ((c & 0xF8) == 0xF0)
+            length = 4;
+        else
+            return false;
+
+        if (i + length > bytes.size())
+            return false;
+
+        for (int j = 1; j < length; ++j)
+        {
+            if ((static_cast<quint8>(bytes.at(i + j)) & 0xC0) != 0x80)
+                return false;
+        }
+
+        i += length;
+    }
+
+    return true;
+}
+
+static QString decodeDeviceText(const QByteArray& bytes)
 {
     const int zero = bytes.indexOf('\0');
     const QByteArray clean = zero >= 0 ? bytes.left(zero) : bytes;
+    if (clean.isEmpty())
+        return {};
+
+    if (isValidUtf8(clean))
+        return QString::fromUtf8(clean).trimmed();
+
     QTextCodec* codec = QTextCodec::codecForName("Windows-1251");
     return codec ? codec->toUnicode(clean).trimmed() : QString::fromLocal8Bit(clean).trimmed();
 }
@@ -148,13 +190,12 @@ void UdpBroadcastDiscovery::parseDatagram(const QByteArray& datagram, const QHos
     device.protocol = QStringLiteral("unicorn-ascii");
     device.channel = QStringLiteral("UDP");
     device.endpoint = QStringLiteral("%1:%2").arg(sender.toString()).arg(qFromBigEndian<quint16>(raw + 6));
+    device.modbusAddress = qFromBigEndian<qint32>(raw + 8);
     device.type = qFromBigEndian<quint16>(raw + 12);
     device.version = qFromBigEndian<quint16>(raw + 14);
-    device.description = zeroTerminatedCp1251(datagram.mid(kDescriptionOffset, kDescriptionSize));
-    device.serialNumber = zeroTerminatedCp1251(datagram.mid(kSerialOffset, qMin(kSerialSize, datagram.size() - kSerialOffset)));
-    device.id = !device.serialNumber.isEmpty()
-        ? device.serialNumber
-        : QStringLiteral("%1-%2-%3").arg(sender.toString()).arg(device.typeHex()).arg(device.versionHex());
+    device.description = decodeDeviceText(datagram.mid(kDescriptionOffset, kDescriptionSize));
+    device.serialNumber = decodeDeviceText(datagram.mid(kSerialOffset, qMin(kSerialSize, datagram.size() - kSerialOffset)));
+    device.id = device.endpoint;
 
     emit logMessage(QStringLiteral("Found %1 %2 %3 at %4")
         .arg(device.typeHex(), device.versionHex(), device.description, device.endpoint));

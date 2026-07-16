@@ -4,13 +4,16 @@
 #include "models.h"
 
 #include <QVector>
+#include <memory>
+
+class DeviceBase;
 
 class ActionRepository
 {
 public:
     bool load(const QString& fileName, QString* error = nullptr);
     QVector<ActionSpec> actionsForDevice(const DeviceIdentity& device) const;
-    QVector<ActionSpec> commonActions(const QVector<DeviceIdentity>& devices) const;
+    QVector<ActionSpec> commonActions(const QVector<std::shared_ptr<DeviceBase>>& devices) const;
     const QVector<ActionSpec>& allActions() const { return mActions; }
 
 private:

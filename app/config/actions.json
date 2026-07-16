@@ -46,6 +46,51 @@
         }
       ],
       "workflow": "flash.write"
+    },
+    {
+      "id": "device.productionDate.update",
+      "title": "Обновить дату производства",
+      "selection": "many",
+      "dangerLevel": "medium",
+      "when": {
+        "capabilitiesAll": ["device.productionDate.update"]
+      },
+      "inputs": [
+        {
+          "name": "productionDate",
+          "type": "date",
+          "required": true
+        }
+      ],
+      "workflow": "device.production-date.update"
+    },
+    {
+      "id": "device.serialNumber.update",
+      "title": "Изменить номер устройства",
+      "selection": "single",
+      "dangerLevel": "medium",
+      "when": {
+        "capabilitiesAll": ["device.serialNumber.update"]
+      },
+      "inputs": [
+        {
+          "name": "serialNumber",
+          "type": "integer",
+          "required": true
+        }
+      ],
+      "workflow": "device.serial-number.update"
+    },
+    {
+      "id": "device.ping",
+      "title": "Ping int[0]",
+      "selection": "single",
+      "dangerLevel": "low",
+      "when": {
+        "capabilitiesAll": ["device.ping"]
+      },
+      "inputs": [],
+      "workflow": "device.ping"
     }
   ]
 }

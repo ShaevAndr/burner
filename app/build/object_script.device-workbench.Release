@@ -1,0 +1,13 @@
+release/action_repository.o
+release/catalog.o
+release/device.o
+release/discovery.o
+release/main.o
+release/main_window.o
+release/service_container.o
+release/unicorn_ascii_transport.o
+release/workflow.o
+release/moc_discovery.o
+release/moc_main_window.o
+release/moc_service_container.o
+release/moc_workflow.o

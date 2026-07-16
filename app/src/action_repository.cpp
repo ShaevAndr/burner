@@ -1,4 +1,5 @@
 #include "action_repository.h"
+#include "device.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -33,6 +34,7 @@ bool ActionRepository::load(const QString& fileName, QString* error)
         action.id = obj.value(QStringLiteral("id")).toString();
         action.title = obj.value(QStringLiteral("title")).toString(action.id);
         action.workflow = obj.value(QStringLiteral("workflow")).toString();
+        action.selection = obj.value(QStringLiteral("selection")).toString(QStringLiteral("many"));
 
         const QJsonObject when = obj.value(QStringLiteral("when")).toObject();
         const QJsonArray capabilities = when.value(QStringLiteral("capabilitiesAll")).toArray();
@@ -64,7 +66,7 @@ QVector<ActionSpec> ActionRepository::actionsForDevice(const DeviceIdentity& dev
     return result;
 }
 
-QVector<ActionSpec> ActionRepository::commonActions(const QVector<DeviceIdentity>& devices) const
+QVector<ActionSpec> ActionRepository::commonActions(const QVector<std::shared_ptr<DeviceBase>>& devices) const
 {
     QVector<ActionSpec> result;
     if (devices.isEmpty())
@@ -72,10 +74,13 @@ QVector<ActionSpec> ActionRepository::commonActions(const QVector<DeviceIdentity
 
     for (const ActionSpec& action : mActions)
     {
+        if (action.selection == QStringLiteral("single"))
+            continue;
+
         bool allowedForAll = true;
-        for (const DeviceIdentity& device : devices)
+        for (const std::shared_ptr<DeviceBase>& device : devices)
         {
-            if (!isActionAllowed(action, device))
+            if (!device || !isActionAllowed(action, device->identity()))
             {
                 allowedForAll = false;
                 break;
@@ -89,10 +94,13 @@ QVector<ActionSpec> ActionRepository::commonActions(const QVector<DeviceIdentity
 
 bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceIdentity& device) const
 {
+    if (action.id == QStringLiteral("device.ping"))
+        return true;
+
     if (!device.known)
         return false;
 
-    const QSet<QString> caps(device.capabilities.begin(), device.capabilities.end());
+    const QSet<QString> caps = QSet<QString>::fromList(device.capabilities);
     for (const QString& required : action.requiredCapabilities)
     {
         if (!caps.contains(required))

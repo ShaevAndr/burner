@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 
 ServiceContainer::ServiceContainer(QObject* parent) :
     QObject(parent),
