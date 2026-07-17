@@ -40,6 +40,9 @@ bool ActionRepository::load(const QString& fileName, QString* error)
         const QJsonArray capabilities = when.value(QStringLiteral("capabilitiesAll")).toArray();
         for (const QJsonValue& cap : capabilities)
             action.requiredCapabilities.append(cap.toString());
+        const QJsonArray states = when.value(QStringLiteral("statesAny")).toArray();
+        for (const QJsonValue& state : states)
+            action.allowedStates.append(state.toString());
 
         const QJsonArray inputs = obj.value(QStringLiteral("inputs")).toArray();
         for (const QJsonValue& inputValue : inputs)
@@ -98,6 +101,9 @@ bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceIde
         return true;
 
     if (!device.known)
+        return false;
+
+    if (!action.allowedStates.isEmpty() && !action.allowedStates.contains(device.state))
         return false;
 
     const QSet<QString> caps = QSet<QString>::fromList(device.capabilities);

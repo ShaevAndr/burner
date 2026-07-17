@@ -18,7 +18,8 @@
         "flash.application.write",
         "flash.bootloader.write",
         "device.productionDate.update",
-        "device.serialNumber.update"
+        "device.serialNumber.update",
+        "device.application.load"
       ],
       "flashWorkflows": {
         "application": "flash.test",

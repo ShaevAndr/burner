@@ -1,0 +1,10 @@
+release/tst_device_workbench.o
+release/action_repository.o
+release/base_device.o
+release/catalog.o
+release/device.o
+release/boc_v12_device.o
+release/unicorn_ascii_transport.o
+release/workflow.o
+release/workflow_definition.o
+release/moc_workflow.o

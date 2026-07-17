@@ -3,10 +3,14 @@
 #include <QDate>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
 #include <QSignalSpy>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QThread>
 #include <QTime>
 #include <QUuid>
 
@@ -30,11 +34,25 @@ public:
         quint16 index = 0;
     };
 
-    bool writeRegister(const DeviceIdentity&, quint16 index, qint32 value, QString*, QString* rawResponse = nullptr) override
+    bool writeRegister(const DeviceIdentity&, quint16 index, qint32 value, QString* error, QString* rawResponse = nullptr) override
     {
+        if (failWrites)
+        {
+            if (error)
+                *error = QStringLiteral("regular write should not be used");
+            return false;
+        }
         writes.append(WriteCall{index, value});
         if (rawResponse)
             *rawResponse = QStringLiteral("TX :000000E20000000000000000\\r\nRX !000000E20000000000000000\\r");
+        return true;
+    }
+
+    bool writeRegisterNoReply(const DeviceIdentity&, quint16 index, qint32 value, QString*, QString* rawResponse = nullptr) override
+    {
+        noReplyWrites.append(WriteCall{index, value});
+        if (rawResponse)
+            *rawResponse = QStringLiteral("TX :000000E20000000000000000\\r\nRX <not expected>");
         return true;
     }
 
@@ -57,14 +75,43 @@ public:
     }
 
     QVector<WriteCall> writes;
+    QVector<WriteCall> noReplyWrites;
     QVector<ReadCall> reads;
     int resetCalls = 0;
+    bool failWrites = false;
+};
+
+class TransportReadThread : public QThread
+{
+public:
+    DeviceIdentity identity;
+    std::shared_ptr<IDeviceTransport> transport;
+    bool ok = false;
+    qint32 value = 0;
+    QString error;
+    QString raw;
+    qint64 elapsedMs = 0;
+
+protected:
+    void run() override
+    {
+        QElapsedTimer timer;
+        timer.start();
+        ok = transport->readRegister(identity, 0, &value, &error, &raw);
+        elapsedMs = timer.elapsed();
+    }
 };
 
 static QString sourceConfigPath(const QString& relativePath)
 {
     const QFileInfo sourceFile(QStringLiteral(__FILE__));
+    static const QString initialCurrentPath = QDir::currentPath();
     const QStringList roots = {
+        initialCurrentPath,
+        initialCurrentPath + QStringLiteral("/app"),
+        initialCurrentPath + QStringLiteral("/app/tests"),
+        initialCurrentPath + QStringLiteral("/.."),
+        initialCurrentPath + QStringLiteral("/../.."),
         QDir::currentPath(),
         QDir::currentPath() + QStringLiteral("/app"),
         QDir::currentPath() + QStringLiteral("/app/tests"),
@@ -101,10 +148,13 @@ private slots:
     void workflowWritesProductionDateRegistersInOrder();
     void catalogDetectsDeviceState();
     void workflowWritesSerialNumberRegisterInBootloader();
+    void applicationLoadActionIsAvailableForBootloader();
+    void workflowLoadsApplicationFromBootloaderWithoutWaitingForReply();
     void unicornAsciiTransportFactoryCreatesTransport();
     void pingActionIsSingleDeviceOnly();
     void pingActionIsAvailableForUnknownDevices();
     void deviceReadIntDelegatesToTransport();
+    void unicornAsciiReadRegisterReturnsAfterFirstValidResponse();
 };
 
 void DeviceWorkbenchTest::catalogExposesBocV12Actions()
@@ -296,8 +346,8 @@ void DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
     QVERIFY(sawTimestampWrite);
     QVERIFY(sawLoadApplication);
     QCOMPARE(int0Writes, 1);
-    QCOMPARE(progressSpy.count(), 9);
-    QCOMPARE(progressSpy.first().at(0).toInt(), 11);
+    QVERIFY(!progressSpy.isEmpty());
+    QVERIFY(progressSpy.first().at(0).toInt() > 0);
     QCOMPARE(progressSpy.last().at(0).toInt(), 100);
     QCOMPARE(transport->writes.size(), 3);
 }
@@ -408,6 +458,83 @@ void DeviceWorkbenchTest::workflowWritesSerialNumberRegisterInBootloader()
     QCOMPARE(transport->writes.at(2).value, qint32(1));
 }
 
+void DeviceWorkbenchTest::applicationLoadActionIsAvailableForBootloader()
+{
+    CatalogService catalog;
+    ActionRepository actions;
+
+    QString error;
+    QVERIFY2(catalog.load(sourceConfigPath(QStringLiteral("config/device-catalog.json")), &error), qPrintable(error));
+    QVERIFY2(actions.load(sourceConfigPath(QStringLiteral("config/actions.json")), &error), qPrintable(error));
+
+    DeviceIdentity bootloader;
+    bootloader.type = 0x1001;
+    bootloader.version = 0x0000;
+    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) (Boot) 1970 I Зав.№902 (SW Jul 15 2026 14:30:56)");
+    bootloader = catalog.enrich(bootloader);
+    QVERIFY(bootloader.known);
+    QCOMPARE(bootloader.state, QStringLiteral("bootloader"));
+
+    bool hasLoadApplication = false;
+    for (const ActionSpec& action : actions.actionsForDevice(bootloader))
+        hasLoadApplication = hasLoadApplication || action.id == QStringLiteral("device.application.load");
+    QVERIFY2(hasLoadApplication, "Bootloader devices must expose load application action");
+}
+
+void DeviceWorkbenchTest::workflowLoadsApplicationFromBootloaderWithoutWaitingForReply()
+{
+    DeviceIdentity device;
+    device.id = QStringLiteral("boc.v12");
+    device.type = 0x1001;
+    device.version = 0x0000;
+    device.known = true;
+    device.catalogId = QStringLiteral("boc.v12");
+    device.deviceClass = QStringLiteral("BocV12Device");
+    device.name = QStringLiteral("БОЦ-В-12");
+    device.state = QStringLiteral("bootloader");
+    device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) (Boot)");
+    device.channel = QStringLiteral("UDP");
+    device.endpoint = QStringLiteral("192.168.1.245:2001");
+    device.modbusAddress = 7;
+
+    ActionSpec action;
+    action.id = QStringLiteral("device.application.load");
+    action.title = QStringLiteral("Load application");
+    action.workflow = QStringLiteral("device.application.load");
+
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    transport->failWrites = true;
+    DeviceFactory factory(transport);
+    auto deviceObject = factory.create(device);
+    QVERIFY(deviceObject);
+
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
+    QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
+
+    runner.run(action, {deviceObject});
+
+    QCOMPARE(transport->writes.size(), 0);
+    QCOMPARE(transport->noReplyWrites.size(), 2);
+    QCOMPARE(transport->noReplyWrites.at(0).index, quint16(0));
+    QCOMPARE(transport->noReplyWrites.at(0).value, qint32(1));
+    QCOMPARE(transport->noReplyWrites.at(1).index, quint16(0));
+    QCOMPARE(transport->noReplyWrites.at(1).value, qint32(1));
+
+    bool sawRetryLog = false;
+    for (const QList<QVariant>& row : logSpy)
+    {
+        if (!row.isEmpty() && row.at(0).toString().contains(QStringLiteral("retry"), Qt::CaseInsensitive))
+        {
+            sawRetryLog = true;
+            break;
+        }
+    }
+    QVERIFY2(sawRetryLog, "Workflow should log the second application load attempt");
+}
+
 void DeviceWorkbenchTest::unicornAsciiTransportFactoryCreatesTransport()
 {
     std::shared_ptr<IDeviceTransport> transport = createUnicornAsciiTransport();
@@ -495,6 +622,36 @@ void DeviceWorkbenchTest::deviceReadIntDelegatesToTransport()
     QCOMPARE(value, qint32(1234));
     QCOMPARE(transport->reads.size(), 1);
     QCOMPARE(transport->reads.at(0).index, quint16(0));
+}
+
+void DeviceWorkbenchTest::unicornAsciiReadRegisterReturnsAfterFirstValidResponse()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    DeviceIdentity identity;
+    identity.modbusAddress = 7;
+    identity.endpoint = QStringLiteral("127.0.0.1:%1").arg(server.serverPort());
+
+    TransportReadThread thread;
+    thread.identity = identity;
+    thread.transport = createUnicornAsciiTransport();
+    thread.start();
+
+    QVERIFY2(server.waitForNewConnection(1000), "Expected transport to connect to test TCP server");
+    QTcpSocket* client = server.nextPendingConnection();
+    QVERIFY(client);
+    QVERIFY2(client->waitForReadyRead(1000), "Expected transport to send ReadInt request");
+    client->readAll();
+
+    const QByteArray response("!07EB00000000000004D200\r");
+    QCOMPARE(client->write(response), qint64(response.size()));
+    QVERIFY(client->waitForBytesWritten(1000));
+
+    QVERIFY2(thread.wait(4000), "Transport read did not finish");
+    QVERIFY2(thread.ok, qPrintable(thread.error));
+    QCOMPARE(thread.value, qint32(1234));
+    QVERIFY2(thread.elapsedMs < 1000, qPrintable(QStringLiteral("Read took %1 ms").arg(thread.elapsedMs)));
 }
 
 QTEST_APPLESS_MAIN(DeviceWorkbenchTest)

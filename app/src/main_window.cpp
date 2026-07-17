@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "workers.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -14,10 +15,11 @@
 #include <QListView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QProgressBar>
 #include <QSplitter>
+#include <QThread>
 #include <QSpinBox>
-#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -66,6 +68,15 @@ MainWindow::MainWindow(ServiceContainer* services, QWidget* parent) :
     connect(&mServices->workflow(), &WorkflowRunner::logMessage, this, &MainWindow::appendLog);
     connect(&mServices->workflow(), &WorkflowRunner::transportLogMessage, this, &MainWindow::appendTransportLog);
     connect(&mServices->workflow(), &WorkflowRunner::progressChanged, this, &MainWindow::onWorkflowProgress);
+}
+
+MainWindow::~MainWindow()
+{
+    if (mWorkflowThread && mWorkflowThread->isRunning())
+    {
+        mWorkflowThread->quit();
+        mWorkflowThread->wait(5000);
+    }
 }
 
 void MainWindow::buildUi()
@@ -414,7 +425,37 @@ void MainWindow::executeAction(const ActionSpec& action, const QVector<std::shar
     if (!prepareActionInvocation(action, devices, &parameters))
         return;
 
-    mServices->workflow().run(action, devices, parameters);
+    startWorkflowAction(action, devices, parameters);
+}
+
+void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters)
+{
+    if (mWorkflowThread)
+    {
+        appendLog(QStringLiteral("Another workflow is already running"));
+        return;
+    }
+
+    QThread* thread = new QThread;
+    WorkflowWorker* worker = new WorkflowWorker(&mServices->workflows(), action, devices, parameters);
+    worker->moveToThread(thread);
+
+    connect(thread, &QThread::started, worker, &WorkflowWorker::run);
+    connect(worker, &WorkflowWorker::logMessage, this, &MainWindow::appendLog);
+    connect(worker, &WorkflowWorker::transportLogMessage, this, &MainWindow::appendTransportLog);
+    connect(worker, &WorkflowWorker::progressChanged, this, &MainWindow::onWorkflowProgress);
+    connect(worker, &WorkflowWorker::finished, thread, &QThread::quit);
+    connect(worker, &WorkflowWorker::finished, worker, &WorkflowWorker::deleteLater);
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread]() {
+        if (mWorkflowThread == thread)
+            mWorkflowThread = nullptr;
+        setActionBusy(false);
+    });
+
+    mWorkflowThread = thread;
+    setActionBusy(true);
+    thread->start();
 }
 
 void MainWindow::appendLog(const QString& message)
@@ -671,40 +712,49 @@ void MainWindow::showPingDialog(const std::shared_ptr<DeviceBase>& device)
     QPushButton* cancel = buttons->addButton(QStringLiteral("Отмена"), QDialogButtonBox::RejectRole);
     layout->addWidget(buttons);
 
-    QTimer timer(&dialog);
     const auto appendPingLine = [&output](const QString& message) {
         output->appendPlainText(QStringLiteral("[%1] %2")
             .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
     };
 
-    const auto pingOnce = [this, device, appendPingLine]() {
-        qint32 value = 0;
-        QString error;
-        QString raw;
-        const DeviceIdentity& current = device->identity();
-        if (device->readInt(0, &value, &error, &raw))
-        {
-            appendPingLine(QStringLiteral("%1 int[0] = %2").arg(current.typeHex()).arg(value));
-        }
-        else
-        {
-            appendPingLine(QStringLiteral("%1 read int[0] failed: %2").arg(current.typeHex(), error));
-        }
-
-        if (!raw.isEmpty())
-            appendTransportLog(QStringLiteral("%1 %2").arg(current.typeHex(), raw));
+    struct PingSession
+    {
+        QThread* thread = nullptr;
+        PingWorker* worker = nullptr;
     };
+    auto pingSession = std::make_shared<PingSession>();
 
-    connect(start, &QPushButton::clicked, &dialog, [&timer, start, pingOnce, appendPingLine]() {
+    connect(start, &QPushButton::clicked, &dialog, [this, &dialog, device, pingSession, start, appendPingLine]() {
+        if (pingSession->thread)
+            return;
+
         start->setEnabled(false);
         appendPingLine(QStringLiteral("Опрос запущен"));
-        pingOnce();
-        timer.start(500);
+        pingSession->thread = new QThread;
+        pingSession->worker = new PingWorker(device, 500);
+        pingSession->worker->moveToThread(pingSession->thread);
+
+        connect(pingSession->thread, &QThread::started, pingSession->worker, &PingWorker::start);
+        connect(pingSession->worker, &PingWorker::pingLine, &dialog, [appendPingLine](const QString& message) {
+            appendPingLine(message);
+        });
+        connect(pingSession->worker, &PingWorker::transportLogMessage, this, &MainWindow::appendTransportLog);
+        connect(pingSession->worker, &PingWorker::finished, pingSession->thread, &QThread::quit);
+        connect(pingSession->worker, &PingWorker::finished, pingSession->worker, &PingWorker::deleteLater);
+        connect(pingSession->thread, &QThread::finished, pingSession->thread, &QThread::deleteLater);
+        connect(pingSession->thread, &QThread::finished, &dialog, [pingSession]() {
+            pingSession->thread = nullptr;
+            pingSession->worker = nullptr;
+        });
+
+        pingSession->thread->start();
     });
     connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
-    connect(&timer, &QTimer::timeout, &dialog, pingOnce);
-    connect(&dialog, &QDialog::finished, &dialog, [&timer]() {
-        timer.stop();
+    connect(&dialog, &QDialog::finished, &dialog, [pingSession]() {
+        if (pingSession->worker)
+            QMetaObject::invokeMethod(pingSession->worker, "stop", Qt::QueuedConnection);
+        else if (pingSession->thread)
+            pingSession->thread->quit();
     });
 
     dialog.exec();
@@ -724,6 +774,20 @@ void MainWindow::rebuildBulkMenu()
             executeAction(action, selected);
         });
     }
+}
+
+void MainWindow::setActionBusy(bool busy)
+{
+    if (mTable)
+        mTable->setEnabled(!busy);
+    if (mBulkButton)
+        mBulkButton->setEnabled(false);
+    if (!busy)
+        rebuildBulkMenu();
+    if (mSearchButton)
+        mSearchButton->setEnabled(!busy);
+    if (mFlashProgress && !busy && mFlashProgress->value() >= 100)
+        mFlashProgress->setVisible(false);
 }
 
 void MainWindow::setBusy(bool busy)

@@ -90,6 +90,7 @@ struct ActionSpec
     QString target;
     QString selection;
     QStringList requiredCapabilities;
+    QStringList allowedStates;
 };
 
 struct DiscoverySettings

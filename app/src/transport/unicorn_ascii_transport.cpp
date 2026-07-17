@@ -205,6 +205,19 @@ QString escapedPacketText(const QByteArray& packet)
         .replace(QLatin1Char('\n'), QStringLiteral("\\n"));
 }
 
+bool hasCompleteDeviceResponse(const QByteArray& buffer)
+{
+    for (int i = 0; i < buffer.size(); ++i)
+    {
+        const char marker = buffer.at(i);
+        if (marker != '!' && marker != '?')
+            continue;
+        if (buffer.indexOf('\r', i) >= 0)
+            return true;
+    }
+    return false;
+}
+
 bool readAsciiResponse(QTcpSocket& socket, QByteArray* response)
 {
     QElapsedTimer timer;
@@ -214,6 +227,8 @@ bool readAsciiResponse(QTcpSocket& socket, QByteArray* response)
         if (!socket.waitForReadyRead(100))
             continue;
         response->append(socket.readAll());
+        if (hasCompleteDeviceResponse(*response))
+            return true;
     }
     return response && !response->isEmpty();
 }
@@ -338,6 +353,27 @@ bool sendRequest(const DeviceIdentity& device, const QByteArray& request, const 
     return false;
 }
 
+bool sendRequestNoReply(const DeviceIdentity& device, const QByteArray& request, QString* error, QString* rawResponse)
+{
+    if (device.modbusAddress <= 0 || device.modbusAddress > 254)
+    {
+        if (error)
+            *error = QStringLiteral("Device address is not available");
+        return false;
+    }
+
+    QString host;
+    quint16 port = 0;
+    if (!parseEndpoint(device.endpoint, &host, &port, error))
+        return false;
+
+    if (rawResponse)
+        *rawResponse = QStringLiteral("TX %1\nRX <not expected>").arg(escapedPacketText(request));
+
+    QTcpSocket socket;
+    return openAndSend(socket, host, port, request, error);
+}
+
 class UnicornAsciiTransport final : public IDeviceTransport
 {
 public:
@@ -350,6 +386,17 @@ public:
 
         const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0xE2, 0, body);
         return sendRequest(device, request, {0xE2, 0xFA, 0xFF}, nullptr, error, rawResponse);
+    }
+
+    bool writeRegisterNoReply(const DeviceIdentity& device, quint16 index, qint32 value, QString* error, QString* rawResponse = nullptr) override
+    {
+        QByteArray body;
+        body.reserve(8);
+        appendInt32(&body, qint32(index));
+        appendInt32(&body, value);
+
+        const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0xE2, 0, body);
+        return sendRequestNoReply(device, request, error, rawResponse);
     }
 
     bool readRegister(const DeviceIdentity& device, quint16 index, qint32* value, QString* error, QString* rawResponse = nullptr) override

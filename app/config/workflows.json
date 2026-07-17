@@ -14,7 +14,7 @@
         {
           "op": "sleep",
           "message": "wait 3 seconds after reset before polling bootloader",
-          "ms": 3000
+          "ms": 5000
         },
         {
           "op": "device.connect",
@@ -22,6 +22,11 @@
           "message": "waiting for device reappearance with (Boot) in description",
           "ms": 1200,
           "settleMs": 1500
+        },
+        {
+          "op": "sleep",
+          "message": "wait 3 seconds after reset before polling bootloader",
+          "ms": 5000
         },
         {
           "op": "device.disableLoadApplication",
@@ -106,6 +111,51 @@
         {
           "op": "log",
           "message": "serial number update finished"
+        }
+      ]
+    },
+    {
+      "id": "device.application.load",
+      "steps": [
+        {
+          "op": "device.loadApplicationNoReply",
+          "label": "load application attempt 1",
+          "message": "int[0] = 1, response is not expected"
+        },
+        {
+          "op": "sleep",
+          "message": "wait 3 seconds before reconnecting to application",
+          "ms": 3000
+        },
+        {
+          "op": "device.connect",
+          "state": "application",
+          "message": "reconnect to main application",
+          "settleMs": 0
+        },
+        {
+          "op": "log",
+          "message": "still in bootloader, retry load application"
+        },
+        {
+          "op": "device.loadApplicationNoReply",
+          "label": "load application attempt 2",
+          "message": "int[0] = 1, response is not expected"
+        },
+        {
+          "op": "sleep",
+          "message": "wait 3 seconds before reconnecting to application",
+          "ms": 3000
+        },
+        {
+          "op": "device.connect",
+          "state": "application",
+          "message": "reconnect to main application",
+          "settleMs": 0
+        },
+        {
+          "op": "log",
+          "message": "load application workflow finished"
         }
       ]
     },

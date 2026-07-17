@@ -82,6 +82,18 @@
       "workflow": "device.serial-number.update"
     },
     {
+      "id": "device.application.load",
+      "title": "Load main application",
+      "selection": "many",
+      "dangerLevel": "medium",
+      "when": {
+        "capabilitiesAll": ["device.application.load"],
+        "statesAny": ["bootloader"]
+      },
+      "inputs": [],
+      "workflow": "device.application.load"
+    },
+    {
       "id": "device.ping",
       "title": "Ping int[0]",
       "selection": "single",

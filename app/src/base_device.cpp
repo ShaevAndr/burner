@@ -35,6 +35,11 @@ bool DeviceBase::loadApplication(QString* error, QString* rawResponse) const
     return writeInt(0, 1, error, rawResponse);
 }
 
+bool DeviceBase::loadApplicationNoReply(QString* error, QString* rawResponse) const
+{
+    return writeIntNoReply(0, 1, error, rawResponse);
+}
+
 bool DeviceBase::disableLoadApplication(QString* error, QString*) const
 {
     if (error)
@@ -67,6 +72,17 @@ bool DeviceBase::writeInt(quint16 index, qint32 value, QString* error, QString* 
     return mTransport->writeRegister(mIdentity, index, value, error, rawResponse);
 }
 
+bool DeviceBase::writeIntNoReply(quint16 index, qint32 value, QString* error, QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->writeRegisterNoReply(mIdentity, index, value, error, rawResponse);
+}
+
 bool DeviceBase::readInt(quint16 index, qint32* value, QString* error, QString* rawResponse) const
 {
     if (!mTransport)
@@ -91,6 +107,12 @@ QHash<QString, DeviceOperation> DeviceBase::operations() const
             QStringLiteral("device.loadApplication"),
             [this](const QVariantMap&, QString* error, QString* rawResponse) {
                 return loadApplication(error, rawResponse);
+            }
+        },
+        {
+            QStringLiteral("device.loadApplicationNoReply"),
+            [this](const QVariantMap&, QString* error, QString* rawResponse) {
+                return loadApplicationNoReply(error, rawResponse);
             }
         },
         {

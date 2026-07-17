@@ -1,0 +1,10 @@
+debug/tst_device_workbench.o
+debug/action_repository.o
+debug/base_device.o
+debug/catalog.o
+debug/device.o
+debug/boc_v12_device.o
+debug/unicorn_ascii_transport.o
+debug/workflow.o
+debug/workflow_definition.o
+debug/moc_workflow.o

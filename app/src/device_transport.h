@@ -10,6 +10,10 @@ class IDeviceTransport
 public:
     virtual ~IDeviceTransport() = default;
     virtual bool writeRegister(const DeviceIdentity& device, quint16 index, qint32 value, QString* error, QString* rawResponse = nullptr) = 0;
+    virtual bool writeRegisterNoReply(const DeviceIdentity& device, quint16 index, qint32 value, QString* error, QString* rawResponse = nullptr)
+    {
+        return writeRegister(device, index, value, error, rawResponse);
+    }
     virtual bool readRegister(const DeviceIdentity& device, quint16 index, qint32* value, QString* error, QString* rawResponse = nullptr) = 0;
     virtual bool resetDevice(const DeviceIdentity& device, QString* error, QString* rawResponse = nullptr) = 0;
 };

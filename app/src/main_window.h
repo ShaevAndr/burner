@@ -14,11 +14,14 @@
 #include <QVariantMap>
 #include <memory>
 
+class QThread;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
     explicit MainWindow(ServiceContainer* services, QWidget* parent = nullptr);
+    ~MainWindow() override;
 
 private slots:
     void startDiscovery();
@@ -42,13 +45,16 @@ private:
     QVector<std::shared_ptr<DeviceBase>> selectedDevices() const;
     ActionSpec actionById(const QString& actionId) const;
     bool prepareActionInvocation(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, QVariantMap* parameters);
+    void startWorkflowAction(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters);
     void showPingDialog(const std::shared_ptr<DeviceBase>& device);
     void rebuildBulkMenu();
     void setBusy(bool busy);
+    void setActionBusy(bool busy);
 
     ServiceContainer* mServices = nullptr;
     DeviceFactory mDeviceFactory;
     QVector<std::shared_ptr<DeviceBase>> mDevices;
+    QThread* mWorkflowThread = nullptr;
 
     QComboBox* mLineMode = nullptr;
     QComboBox* mNetworkInterface = nullptr;
