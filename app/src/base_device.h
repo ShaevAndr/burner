@@ -29,6 +29,12 @@ public:
     virtual bool writeInt(quint16 index, qint32 value, QString* error = nullptr, QString* rawResponse = nullptr) const;
     virtual bool writeIntNoReply(quint16 index, qint32 value, QString* error = nullptr, QString* rawResponse = nullptr) const;
     virtual bool readInt(quint16 index, qint32* value, QString* error = nullptr, QString* rawResponse = nullptr) const;
+    virtual bool readUuid(QString* uuid, QString* error = nullptr, QString* rawResponse = nullptr) const;
+    virtual bool flashGetParams(QVector<FlashMemoryParams>* params, QString* error = nullptr, QString* rawResponse = nullptr) const;
+    virtual bool flashWritePage(int flashNum, int pageNum, const QByteArray& page, QString* error = nullptr, QString* rawResponse = nullptr) const;
+    virtual bool flashReadPage(int flashNum, int pageNum, QByteArray* page, QString* error = nullptr, QString* rawResponse = nullptr) const;
+    virtual bool waitForDeviceIdentity(const DeviceIdentity& expected, int timeoutMs, int pollIntervalMs, DeviceIdentity* identity, QString* error = nullptr, QString* rawResponse = nullptr) const;
+    virtual bool waitForDeviceIdentity(int timeoutMs, int pollIntervalMs, DeviceIdentity* identity, QString* error = nullptr, QString* rawResponse = nullptr) const;
     QHash<QString, DeviceOperation> operations() const;
     DeviceOperation operation(const QString& key) const;
 

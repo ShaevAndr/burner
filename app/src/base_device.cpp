@@ -40,11 +40,9 @@ bool DeviceBase::loadApplicationNoReply(QString* error, QString* rawResponse) co
     return writeIntNoReply(0, 1, error, rawResponse);
 }
 
-bool DeviceBase::disableLoadApplication(QString* error, QString*) const
+bool DeviceBase::disableLoadApplication(QString* error, QString* rawResponse) const
 {
-    if (error)
-        *error = QStringLiteral("Disable load application is not supported for %1").arg(className());
-    return false;
+    return writeInt(0, 0, error, rawResponse);
 }
 
 bool DeviceBase::writeProductionDate(qint32, QString* error, QString*) const
@@ -94,6 +92,71 @@ bool DeviceBase::readInt(quint16 index, qint32* value, QString* error, QString* 
     return mTransport->readRegister(mIdentity, index, value, error, rawResponse);
 }
 
+bool DeviceBase::readUuid(QString* uuid, QString* error, QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->readUuid(mIdentity, uuid, error, rawResponse);
+}
+
+bool DeviceBase::flashGetParams(QVector<FlashMemoryParams>* params, QString* error, QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->flashGetParams(mIdentity, params, error, rawResponse);
+}
+
+bool DeviceBase::flashWritePage(int flashNum, int pageNum, const QByteArray& page, QString* error, QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->flashWritePage(mIdentity, flashNum, pageNum, page, error, rawResponse);
+}
+
+bool DeviceBase::flashReadPage(int flashNum, int pageNum, QByteArray* page, QString* error, QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->flashReadPage(mIdentity, flashNum, pageNum, page, error, rawResponse);
+}
+
+bool DeviceBase::waitForDeviceIdentity(const DeviceIdentity& expected,
+    int timeoutMs,
+    int pollIntervalMs,
+    DeviceIdentity* identity,
+    QString* error,
+    QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs, identity, error, rawResponse);
+}
+
+bool DeviceBase::waitForDeviceIdentity(int timeoutMs, int pollIntervalMs, DeviceIdentity* identity, QString* error, QString* rawResponse) const
+{
+    return waitForDeviceIdentity(mIdentity, timeoutMs, pollIntervalMs, identity, error, rawResponse);
+}
+
 QHash<QString, DeviceOperation> DeviceBase::operations() const
 {
     return {
@@ -139,6 +202,16 @@ QHash<QString, DeviceOperation> DeviceBase::operations() const
                 const quint16 index = quint16(arguments.value(QStringLiteral("index"), 0).toUInt());
                 qint32 value = 0;
                 return readInt(index, &value, error, rawResponse);
+            }
+        },
+        {
+            QStringLiteral("flash.writePage"),
+            [this](const QVariantMap& arguments, QString* error, QString* rawResponse) {
+                return flashWritePage(arguments.value(QStringLiteral("flashNum")).toInt(),
+                    arguments.value(QStringLiteral("pageNum")).toInt(),
+                    arguments.value(QStringLiteral("page")).toByteArray(),
+                    error,
+                    rawResponse);
             }
         }
     };

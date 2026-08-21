@@ -9,6 +9,23 @@
 #include <QVariantMap>
 #include <memory>
 
+class UuidWorker : public QObject
+{
+    Q_OBJECT
+public:
+    UuidWorker(quint64 requestId, std::shared_ptr<DeviceBase> device, QObject* parent = nullptr);
+
+public slots:
+    void run();
+
+signals:
+    void finished(quint64 requestId, QString uuid, QString error, QString rawResponse);
+
+private:
+    quint64 mRequestId = 0;
+    std::shared_ptr<DeviceBase> mDevice;
+};
+
 class WorkflowWorker : public QObject
 {
     Q_OBJECT
@@ -26,7 +43,7 @@ signals:
     void logMessage(QString message);
     void transportLogMessage(QString message);
     void progressChanged(int percent);
-    void finished();
+    void finished(bool successful);
 
 private:
     WorkflowRepository* mWorkflows = nullptr;

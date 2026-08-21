@@ -14,13 +14,13 @@ void WorkflowRunner::setWorkflowRepository(WorkflowRepository* workflows)
     mWorkflows = workflows;
 }
 
-void WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters)
+bool WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters)
 {
     const WorkflowDefinition* definition = mWorkflows ? mWorkflows->definitionFor(action) : nullptr;
     if (!definition)
     {
         emit logMessage(QStringLiteral("Workflow %1 is not defined").arg(action.workflow));
-        return;
+        return false;
     }
 
     emit logMessage(QStringLiteral("Starting %1 for %2 device(s)").arg(action.id).arg(devices.size()));
@@ -39,6 +39,7 @@ void WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr
         QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
     };
 
+    bool successful = true;
     for (const std::shared_ptr<DeviceBase>& device : devices)
     {
         if (!device)
@@ -48,7 +49,11 @@ void WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr
         while (workflow.next(*device))
         {
         }
+        successful = workflow.isSuccessful() && successful;
     }
 
-    emit logMessage(QStringLiteral("Workflow %1 finished").arg(action.id));
+    emit logMessage(successful
+        ? QStringLiteral("Workflow %1 completed successfully").arg(action.id)
+        : QStringLiteral("Workflow %1 failed").arg(action.id));
+    return successful;
 }

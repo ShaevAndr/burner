@@ -3,7 +3,7 @@
   "actions": [
     {
       "id": "flash.application.write",
-      "title": "Записать application flash",
+      "title": "Прошить application",
       "selection": "many",
       "dangerLevel": "high",
       "when": {
@@ -15,14 +15,9 @@
           "type": "firmwareArtifact",
           "target": "application",
           "required": true
-        },
-        {
-          "name": "verifyAfterWrite",
-          "type": "boolean",
-          "default": true
         }
       ],
-      "workflow": "flash.write"
+      "workflow": "firmware.transition"
     },
     {
       "id": "flash.bootloader.write",

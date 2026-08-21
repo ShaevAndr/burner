@@ -5,16 +5,19 @@
 #include "service_container.h"
 
 #include <QComboBox>
+#include <QHash>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
 #include <QTableWidget>
 #include <QVariantMap>
 #include <memory>
 
 class QThread;
+class QStackedWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -26,6 +29,7 @@ public:
 private slots:
     void startDiscovery();
     void onDeviceFound(DeviceIdentity device);
+    void onUuidReadFinished(quint64 requestId, const QString& uuid, const QString& error, const QString& rawResponse);
     void onDiscoveryFinished();
     void updateLineMode();
     void updateBulkMenu();
@@ -38,22 +42,44 @@ private slots:
 private:
     void buildUi();
     QWidget* buildSidebar();
+    QWidget* buildDiscoveryPage();
+    QWidget* buildFirmwarePage();
     QWidget* buildDiscoveryPanel();
-    QWidget* buildTablePanel();
+    QWidget* buildDiscoveryTablePanel();
+    QWidget* buildFirmwareTablePanel();
     void addDeviceRow(const std::shared_ptr<DeviceBase>& device);
     void updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
+    void updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
+    void updateFirmwareDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
+    void mergeDiscoveredDevice(const std::shared_ptr<DeviceBase>& device);
     QVector<std::shared_ptr<DeviceBase>> selectedDevices() const;
     ActionSpec actionById(const QString& actionId) const;
     bool prepareActionInvocation(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, QVariantMap* parameters);
     void startWorkflowAction(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters);
     void showPingDialog(const std::shared_ptr<DeviceBase>& device);
     void rebuildBulkMenu();
+    bool isDeviceBusy(const std::shared_ptr<DeviceBase>& device) const;
+    void setDevicesBusy(const QVector<std::shared_ptr<DeviceBase>>& devices, bool busy);
     void setBusy(bool busy);
     void setActionBusy(bool busy);
 
     ServiceContainer* mServices = nullptr;
     DeviceFactory mDeviceFactory;
+
+    struct PendingUuidRead
+    {
+        std::shared_ptr<DeviceBase> device;
+        quint64 discoveryGeneration = 0;
+        QString endpointKey;
+    };
+
     QVector<std::shared_ptr<DeviceBase>> mDevices;
+    QHash<quint64, PendingUuidRead> mPendingUuidReads;
+    QSet<QString> mPendingUuidEndpoints;
+    QSet<QThread*> mUuidThreads;
+    QSet<const DeviceBase*> mBusyDevices;
+    quint64 mNextUuidRequestId = 1;
+    quint64 mDiscoveryGeneration = 0;
     QThread* mWorkflowThread = nullptr;
 
     QComboBox* mLineMode = nullptr;
@@ -66,11 +92,13 @@ private:
     QLineEdit* mAddressEnd = nullptr;
     QWidget* mRs485Panel = nullptr;
     QPushButton* mSearchButton = nullptr;
-    QLineEdit* mSearch = nullptr;
-    QPushButton* mBulkButton = nullptr;
-    QMenu* mBulkMenu = nullptr;
+    QPushButton* mDiscoveryTabButton = nullptr;
+    QPushButton* mFirmwareTabButton = nullptr;
+    QStackedWidget* mPages = nullptr;
+    QPushButton* mBulkFlashButton = nullptr;
     QProgressBar* mFlashProgress = nullptr;
-    QTableWidget* mTable = nullptr;
+    QTableWidget* mDiscoveryTable = nullptr;
+    QTableWidget* mFirmwareTable = nullptr;
     QPlainTextEdit* mLog = nullptr;
     QPlainTextEdit* mTransportLog = nullptr;
 };

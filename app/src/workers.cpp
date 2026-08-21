@@ -5,6 +5,25 @@
 
 #include <utility>
 
+UuidWorker::UuidWorker(quint64 requestId, std::shared_ptr<DeviceBase> device, QObject* parent) :
+    QObject(parent),
+    mRequestId(requestId),
+    mDevice(std::move(device))
+{
+}
+
+void UuidWorker::run()
+{
+    QString uuid;
+    QString error;
+    QString rawResponse;
+    if (!mDevice)
+        error = QStringLiteral("Device is not available");
+    else
+        mDevice->readUuid(&uuid, &error, &rawResponse);
+    emit finished(mRequestId, uuid, error, rawResponse);
+}
+
 WorkflowWorker::WorkflowWorker(WorkflowRepository* workflows,
     ActionSpec action,
     QVector<std::shared_ptr<DeviceBase>> devices,
@@ -25,8 +44,7 @@ void WorkflowWorker::run()
     connect(&runner, &WorkflowRunner::transportLogMessage, this, &WorkflowWorker::transportLogMessage);
     connect(&runner, &WorkflowRunner::progressChanged, this, &WorkflowWorker::progressChanged);
 
-    runner.run(mAction, mDevices, mParameters);
-    emit finished();
+    emit finished(runner.run(mAction, mDevices, mParameters));
 }
 
 PingWorker::PingWorker(std::shared_ptr<DeviceBase> device, int intervalMs, QObject* parent) :

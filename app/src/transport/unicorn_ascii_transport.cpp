@@ -2,13 +2,143 @@
 
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <QNetworkDatagram>
+#include <QNetworkInterface>
+#include <QRegularExpression>
 #include <QTcpSocket>
+#include <QTextCodec>
+#include <QUdpSocket>
 #include <QVector>
+#include <QtEndian>
 
 #include <cctype>
 
 namespace
 {
+static const QHostAddress kDiscoveryAddress(QStringLiteral("239.1.2.1"));
+static const quint16 kDiscoveryPort = 5001;
+static const quint32 kDiscoveryMagic = 0x34125643;
+
+bool isValidUtf8(const QByteArray& bytes)
+{
+    for (int i = 0; i < bytes.size(); )
+    {
+        const quint8 c = quint8(bytes.at(i));
+        if (c < 0x80)
+        {
+            ++i;
+            continue;
+        }
+        int length = 0;
+        if ((c & 0xE0) == 0xC0)
+            length = 2;
+        else if ((c & 0xF0) == 0xE0)
+            length = 3;
+        else if ((c & 0xF8) == 0xF0)
+            length = 4;
+        else
+            return false;
+        if (i + length > bytes.size())
+            return false;
+        for (int j = 1; j < length; ++j)
+        {
+            if ((quint8(bytes.at(i + j)) & 0xC0) != 0x80)
+                return false;
+        }
+        i += length;
+    }
+    return true;
+}
+
+QString decodeDiscoveryText(const QByteArray& bytes)
+{
+    const int zero = bytes.indexOf('\0');
+    const QByteArray clean = zero >= 0 ? bytes.left(zero) : bytes;
+    if (clean.isEmpty())
+        return {};
+    if (isValidUtf8(clean))
+        return QString::fromUtf8(clean).trimmed();
+    QTextCodec* codec = QTextCodec::codecForName("Windows-1251");
+    return codec ? codec->toUnicode(clean).trimmed() : QString::fromLocal8Bit(clean).trimmed();
+}
+
+bool descriptionContainsBoot(const QString& description)
+{
+    static const QRegularExpression bootPattern(
+        QStringLiteral("\\(\\s*Boot\\s*\\)"),
+        QRegularExpression::CaseInsensitiveOption);
+    return bootPattern.match(description).hasMatch();
+}
+
+QString formatUuid(const QByteArray& bytes)
+{
+    if (bytes.size() != 16)
+        return {};
+    const QString hex = QString::fromLatin1(bytes.toHex().toUpper());
+    return QStringLiteral("%1-%2-%3-%4-%5")
+        .arg(hex.mid(0, 8), hex.mid(8, 4), hex.mid(12, 4), hex.mid(16, 4), hex.mid(20, 12));
+}
+
+bool parseDiscoveryDatagram(const QByteArray& datagram, const QHostAddress& sender, DeviceIdentity* device)
+{
+    static const int kDescriptionOffset = 16;
+    static const int kDescriptionSize = 100;
+    static const int kSerialOffset = 116;
+    static const int kSerialSize = 40;
+    if (!device || datagram.size() < kSerialOffset)
+        return false;
+
+    const uchar* raw = reinterpret_cast<const uchar*>(datagram.constData());
+    if (qFromBigEndian<quint32>(raw) != kDiscoveryMagic || qFromBigEndian<quint16>(raw + 4) != 1)
+        return false;
+
+    DeviceIdentity found;
+    found.protocol = QStringLiteral("unicorn-ascii");
+    found.channel = QStringLiteral("UDP");
+    found.endpoint = QStringLiteral("%1:%2").arg(sender.toString()).arg(qFromBigEndian<quint16>(raw + 6));
+    found.modbusAddress = qFromBigEndian<qint32>(raw + 8);
+    found.type = qFromBigEndian<quint16>(raw + 12);
+    found.version = qFromBigEndian<quint16>(raw + 14);
+    found.description = decodeDiscoveryText(datagram.mid(kDescriptionOffset, kDescriptionSize));
+    found.serialNumber = decodeDiscoveryText(datagram.mid(kSerialOffset, qMin(kSerialSize, datagram.size() - kSerialOffset)));
+    found.id = found.endpoint;
+    *device = found;
+    return true;
+}
+
+bool sendDiscovery(QUdpSocket* socket, const QHostAddress& directAddress = QHostAddress())
+{
+    bool sent = false;
+    const QByteArray payload("FINE", 4);
+    // During a firmware transition the device IP is already known. Sending a
+    // unicast probe avoids relying on the OS multicast route, which may point
+    // at a VPN/tunnel instead of the adapter connected to the device.
+    if (!directAddress.isNull() && directAddress.protocol() == QAbstractSocket::IPv4Protocol)
+    {
+        if (socket->writeDatagram(payload, directAddress, kDiscoveryPort) >= 0)
+            return true;
+    }
+
+    for (const QNetworkInterface& iface : QNetworkInterface::allInterfaces())
+    {
+        if (!iface.isValid() || !iface.flags().testFlag(QNetworkInterface::IsRunning)
+            || !iface.flags().testFlag(QNetworkInterface::CanMulticast))
+            continue;
+        for (const QNetworkAddressEntry& address : iface.addressEntries())
+        {
+            if (address.ip().protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+            QNetworkDatagram datagram(payload, kDiscoveryAddress, kDiscoveryPort);
+            datagram.setInterfaceIndex(uint(iface.index()));
+            datagram.setSender(address.ip());
+            sent = socket->writeDatagram(datagram) >= 0 || sent;
+        }
+    }
+    if (!sent)
+        sent = socket->writeDatagram(payload, kDiscoveryAddress, kDiscoveryPort) >= 0;
+    return sent;
+}
+
 bool parseEndpoint(const QString& endpoint, QString* host, quint16* port, QString* error)
 {
     const int split = endpoint.lastIndexOf(QLatin1Char(':'));
@@ -70,6 +200,19 @@ void appendInt32(QByteArray* body, qint32 value)
     body->append(char(raw & 0xFF));
 }
 
+void appendUInt8(QByteArray* body, quint8 value)
+{
+    body->append(char(value));
+}
+
+void appendUInt32(QByteArray* body, quint32 value)
+{
+    body->append(char((value >> 24) & 0xFF));
+    body->append(char((value >> 16) & 0xFF));
+    body->append(char((value >> 8) & 0xFF));
+    body->append(char(value & 0xFF));
+}
+
 bool readInt32(const QByteArray& body, int offset, qint32* value)
 {
     if (offset < 0 || body.size() < offset + 4)
@@ -81,6 +224,21 @@ bool readInt32(const QByteArray& body, int offset, qint32* value)
     if (value)
         *value = qint32(raw);
     return true;
+}
+
+quint8 flashChecksum(const QByteArray& data, int beginPos, int endPos)
+{
+    quint16 checksum = 0;
+    for (int i = beginPos; i <= endPos && i < data.size(); ++i)
+    {
+        checksum = quint16(checksum + quint8(data.at(i)));
+        while (checksum > 0x00FF)
+        {
+            checksum &= 0x00FF;
+            checksum++;
+        }
+    }
+    return quint8((checksum ^ 0x00FF) & 0x00FF);
 }
 
 bool decodeAsciiPair(char hi, char lo, quint8* value)
@@ -438,6 +596,33 @@ public:
         return true;
     }
 
+    bool readUuid(const DeviceIdentity& device, QString* uuid, QString* error, QString* rawResponse = nullptr) override
+    {
+        QByteArray responseBody;
+        const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0x07, 0, QByteArray());
+        if (!sendRequest(device, request, {0x07}, &responseBody, error, rawResponse))
+            return false;
+
+        if (responseBody.size() != 16)
+        {
+            if (error)
+                *error = QStringLiteral("UUID response must contain 4 Integer values (16 bytes), got %1")
+                    .arg(responseBody.size());
+            return false;
+        }
+
+        const QString value = formatUuid(responseBody);
+        if (value.isEmpty() || responseBody == QByteArray(16, char(0)))
+        {
+            if (error)
+                *error = QStringLiteral("Device returned an invalid UUID");
+            return false;
+        }
+        if (uuid)
+            *uuid = value;
+        return true;
+    }
+
     bool resetDevice(const DeviceIdentity& device, QString* error, QString* rawResponse = nullptr) override
     {
         QByteArray body;
@@ -450,6 +635,245 @@ public:
 
         const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0xFA, 0, body);
         return sendRequest(device, request, {0xFA, 0xFF}, nullptr, error, rawResponse);
+    }
+
+    bool flashGetParams(const DeviceIdentity& device, QVector<FlashMemoryParams>* params, QString* error, QString* rawResponse = nullptr) override
+    {
+        QByteArray responseBody;
+        const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0x45, 0, QByteArray());
+        if (!sendRequest(device, request, {0x45, 0xFF}, &responseBody, error, rawResponse))
+            return false;
+
+        if ((responseBody.size() % 8) != 0)
+        {
+            if (error)
+                *error = QStringLiteral("Flash params response has bad size");
+            return false;
+        }
+
+        if (params)
+        {
+            params->clear();
+            for (int offset = 0; offset < responseBody.size(); offset += 8)
+            {
+                qint32 pagesCount = 0;
+                qint32 pageSize = 0;
+                if (!readInt32(responseBody, offset, &pagesCount) || !readInt32(responseBody, offset + 4, &pageSize))
+                {
+                    if (error)
+                        *error = QStringLiteral("Bad flash params response body");
+                    return false;
+                }
+                params->append(FlashMemoryParams{pagesCount, pageSize});
+            }
+        }
+        return true;
+    }
+
+    bool flashWritePage(const DeviceIdentity& device, int flashNum, int pageNum, const QByteArray& page, QString* error, QString* rawResponse = nullptr) override
+    {
+        if (flashNum < 0 || flashNum > 255 || pageNum < 0)
+        {
+            if (error)
+                *error = QStringLiteral("Bad flash or page number");
+            return false;
+        }
+
+        QByteArray body;
+        body.reserve(1 + 4 + 4 + page.size() + 1);
+        appendUInt8(&body, quint8(flashNum));
+        appendInt32(&body, qint32(pageNum));
+        appendUInt32(&body, 0xEB1C5A3F);
+        body.append(page);
+        body.append(char(flashChecksum(body, 0, body.size() - 1)));
+
+        QByteArray responseBody;
+        const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0x43, 0, body);
+        if (!sendRequest(device, request, {0x43, 0xFF}, &responseBody, error, rawResponse))
+            return false;
+
+        if (responseBody.size() < 5)
+        {
+            if (error)
+                *error = QStringLiteral("Flash write response is too short");
+            return false;
+        }
+
+        qint32 responsePage = -1;
+        if (quint8(responseBody.at(0)) != quint8(flashNum) || !readInt32(responseBody, 1, &responsePage) || responsePage != pageNum)
+        {
+            if (error)
+                *error = QStringLiteral("Flash write response target mismatch");
+            return false;
+        }
+        return true;
+    }
+
+    bool flashReadPage(const DeviceIdentity& device, int flashNum, int pageNum, QByteArray* page, QString* error, QString* rawResponse = nullptr) override
+    {
+        if (flashNum < 0 || flashNum > 255 || pageNum < 0)
+        {
+            if (error)
+                *error = QStringLiteral("Bad flash or page number");
+            return false;
+        }
+
+        QByteArray body;
+        body.reserve(5);
+        appendUInt8(&body, quint8(flashNum));
+        appendInt32(&body, qint32(pageNum));
+
+        QByteArray responseBody;
+        const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0x44, 0, body);
+        if (!sendRequest(device, request, {0x44, 0xFF}, &responseBody, error, rawResponse))
+            return false;
+
+        if (responseBody.size() < 6)
+        {
+            if (error)
+                *error = QStringLiteral("Flash read response is too short");
+            return false;
+        }
+
+        qint32 responsePage = -1;
+        if (quint8(responseBody.at(0)) != quint8(flashNum) || !readInt32(responseBody, 1, &responsePage) || responsePage != pageNum)
+        {
+            if (error)
+                *error = QStringLiteral("Flash read response target mismatch");
+            return false;
+        }
+
+        const quint8 rxChecksum = quint8(responseBody.at(responseBody.size() - 1));
+        const quint8 calculated = flashChecksum(responseBody, 0, responseBody.size() - 2);
+        if (rxChecksum != calculated)
+        {
+            if (error)
+                *error = QStringLiteral("Flash read checksum mismatch");
+            return false;
+        }
+
+        if (page)
+            *page = responseBody.mid(5, responseBody.size() - 6);
+        return true;
+    }
+
+    bool waitForDeviceIdentity(const DeviceIdentity& expected,
+        int timeoutMs,
+        int pollIntervalMs,
+        DeviceIdentity* identity,
+        QString* error,
+        QString* rawResponse = nullptr) override
+    {
+        QString expectedHost;
+        if (!parseEndpoint(expected.endpoint, &expectedHost, nullptr, error))
+            return false;
+        const QHostAddress expectedAddress(expectedHost);
+
+        QUdpSocket socket;
+        if (!socket.bind(QHostAddress::AnyIPv4, 0, QAbstractSocket::DefaultForPlatform | QAbstractSocket::ReuseAddressHint))
+        {
+            if (error)
+                *error = QStringLiteral("UDP discovery bind failed: %1").arg(socket.errorString());
+            return false;
+        }
+
+        QElapsedTimer elapsed;
+        elapsed.start();
+        const int effectiveTimeout = qMax(1, timeoutMs);
+        const int effectivePoll = qMax(50, pollIntervalMs);
+        qint64 nextSendAt = 0;
+        int receivedDatagrams = 0;
+        QString lastCandidate;
+        QString lastRejection;
+        while (elapsed.elapsed() < effectiveTimeout)
+        {
+            if (elapsed.elapsed() >= nextSendAt)
+            {
+                if (!sendDiscovery(&socket, expectedAddress) && rawResponse)
+                    *rawResponse = QStringLiteral("UDP discovery send failed: %1").arg(socket.errorString());
+                nextSendAt = elapsed.elapsed() + effectivePoll;
+            }
+
+            const int waitMs = qMin(effectivePoll, effectiveTimeout - int(elapsed.elapsed()));
+            if (!socket.waitForReadyRead(waitMs))
+                continue;
+
+            while (socket.hasPendingDatagrams())
+            {
+                QHostAddress sender;
+                quint16 senderPort = 0;
+                QByteArray datagram(int(socket.pendingDatagramSize()), Qt::Uninitialized);
+                if (socket.readDatagram(datagram.data(), datagram.size(), &sender, &senderPort) < 0)
+                    continue;
+                ++receivedDatagrams;
+                if (!expectedHost.isEmpty() && sender.toString() != expectedHost)
+                {
+                    lastRejection = QStringLiteral("sender %1 does not match %2").arg(sender.toString(), expectedHost);
+                    continue;
+                }
+
+                DeviceIdentity found;
+                if (!parseDiscoveryDatagram(datagram, sender, &found))
+                {
+                    lastRejection = QStringLiteral("invalid discovery datagram from %1 (%2 bytes)")
+                        .arg(sender.toString()).arg(datagram.size());
+                    continue;
+                }
+                lastCandidate = QStringLiteral("%1 %2 '%3' serial '%4'")
+                    .arg(found.typeHex(), found.versionHex(), found.description, found.serialNumber);
+                if (!expected.serialNumber.isEmpty() && !found.serialNumber.isEmpty()
+                    && expected.serialNumber != found.serialNumber)
+                {
+                    lastRejection = QStringLiteral("serial '%1' does not match '%2'")
+                        .arg(found.serialNumber, expected.serialNumber);
+                    continue;
+                }
+                if (expected.type != 0
+                    && (found.type != expected.type || found.version != expected.version))
+                {
+                    lastRejection = QStringLiteral("type/version does not match");
+                    continue;
+                }
+                if (expected.state == QStringLiteral("bootloader") && !descriptionContainsBoot(found.description))
+                {
+                    lastRejection = QStringLiteral("description has no (Boot) marker");
+                    continue;
+                }
+
+                QString foundUuid;
+                QString uuidError;
+                QString uuidRaw;
+                if (!readUuid(found, &foundUuid, &uuidError, &uuidRaw))
+                {
+                    lastRejection = QStringLiteral("UUID read failed: %1").arg(uuidError);
+                    continue;
+                }
+                found.uuid = foundUuid;
+                if (!expected.uuid.isEmpty() && found.uuid.compare(expected.uuid, Qt::CaseInsensitive) != 0)
+                {
+                    lastRejection = QStringLiteral("UUID %1 does not match expected %2")
+                        .arg(found.uuid, expected.uuid);
+                    continue;
+                }
+
+                if (rawResponse)
+                    *rawResponse = QStringLiteral("discovered %1 %2 %3 at %4 UUID=%5\n%6")
+                        .arg(found.typeHex(), found.versionHex(), found.description, found.endpoint, found.uuid, uuidRaw);
+                if (identity)
+                    *identity = found;
+                return true;
+            }
+        }
+
+        if (rawResponse && !lastCandidate.isEmpty())
+            *rawResponse = QStringLiteral("last discovery candidate: %1; rejected: %2")
+                .arg(lastCandidate, lastRejection);
+        if (error)
+            *error = QStringLiteral("Device did not reappear within %1 ms; received %2 datagram(s)%3")
+                .arg(effectiveTimeout)
+                .arg(receivedDatagrams)
+                .arg(lastRejection.isEmpty() ? QString() : QStringLiteral("; last rejection: %1").arg(lastRejection));
+        return false;
     }
 };
 } // namespace

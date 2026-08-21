@@ -1,42 +1,51 @@
 #include "main_window.h"
 #include "workers.h"
 
-#include <QAction>
 #include <QCheckBox>
 #include <QDateEdit>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListView>
-#include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QProgressBar>
 #include <QSplitter>
 #include <QThread>
 #include <QSpinBox>
-#include <QToolButton>
+#include <QStackedWidget>
+#include <QStyle>
 #include <QVBoxLayout>
 
-enum Columns
+enum DiscoveryColumns
 {
-    ColCheck = 0,
-    ColDevice,
-    ColNumber,
-    ColAddress,
-    ColChannel,
-    ColType,
-    ColVersion,
-    ColState,
-    ColDescription,
-    ColStatus,
-    ColActions,
-    ColCount
+    DiscoveryDevice = 0,
+    DiscoveryNumber,
+    DiscoveryAddress,
+    DiscoveryChannel,
+    DiscoveryState,
+    DiscoveryPing,
+    DiscoveryColumnCount
+};
+
+enum FirmwareColumns
+{
+    FirmwareCheck = 0,
+    FirmwareActions,
+    FirmwareDevice,
+    FirmwareNumber,
+    FirmwareAddress,
+    FirmwareChannel,
+    FirmwareCurrent,
+    FirmwareState,
+    FirmwareColumnCount
 };
 
 static void configureCombo(QComboBox* combo)
@@ -49,6 +58,126 @@ static void configureCombo(QComboBox* combo)
 static bool isFlashAction(const QString& actionId)
 {
     return actionId.startsWith(QStringLiteral("flash."));
+}
+
+static QWidget* tableButtonCell(QPushButton* first, QPushButton* second = nullptr)
+{
+    QWidget* cell = new QWidget;
+    QHBoxLayout* layout = new QHBoxLayout(cell);
+    layout->setContentsMargins(5, 4, 5, 4);
+    layout->setSpacing(5);
+    layout->addWidget(first);
+    if (second)
+        layout->addWidget(second);
+    layout->addStretch();
+    return cell;
+}
+
+static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_ptr<DeviceBase>>& devices, const QString& target)
+{
+    QVector<FirmwareArtifact> artifacts;
+    if (devices.isEmpty() || !devices.first())
+        return artifacts;
+
+    const DeviceIdentity& firstIdentity = devices.first()->identity();
+    if (target == QStringLiteral("application") && !firstIdentity.firmwareVersions.isEmpty())
+    {
+        for (const FirmwareTransitionSpec& transition : firstIdentity.firmwareTransitions)
+        {
+            if (!transition.enabled || transition.from != firstIdentity.currentFirmwareId)
+                continue;
+            const FirmwareVersionSpec* targetFirmware = firstIdentity.firmwareVersionById(transition.to);
+            if (!targetFirmware || targetFirmware->artifact.target != target)
+                continue;
+
+            bool availableForAll = true;
+            for (const std::shared_ptr<DeviceBase>& device : devices)
+            {
+                if (!device)
+                {
+                    availableForAll = false;
+                    break;
+                }
+                const FirmwareTransitionSpec* deviceTransition = device->identity().transitionTo(transition.to);
+                if (!deviceTransition || !deviceTransition->enabled)
+                {
+                    availableForAll = false;
+                    break;
+                }
+            }
+            if (availableForAll)
+                artifacts.append(targetFirmware->artifact);
+        }
+        return artifacts;
+    }
+
+    for (const FirmwareArtifact& artifact : firstIdentity.firmwareArtifacts)
+    {
+        if (artifact.target == target)
+            artifacts.append(artifact);
+    }
+
+    for (int deviceIndex = 1; deviceIndex < devices.size() && !artifacts.isEmpty(); ++deviceIndex)
+    {
+        if (!devices.at(deviceIndex))
+        {
+            artifacts.clear();
+            break;
+        }
+
+        const QVector<FirmwareArtifact>& otherArtifacts = devices.at(deviceIndex)->identity().firmwareArtifacts;
+        QVector<FirmwareArtifact> common;
+        for (const FirmwareArtifact& candidate : artifacts)
+        {
+            for (const FirmwareArtifact& other : otherArtifacts)
+            {
+                const bool sameFirmwareId = !candidate.firmwareId.isEmpty()
+                    && candidate.firmwareId == other.firmwareId;
+                const bool samePath = !candidate.relativePath.isEmpty()
+                    && candidate.relativePath.compare(other.relativePath, Qt::CaseInsensitive) == 0;
+                const bool sameHash = !candidate.sha256.isEmpty()
+                    && candidate.sha256.compare(other.sha256, Qt::CaseInsensitive) == 0;
+                if (other.target == target && (sameFirmwareId || samePath || sameHash))
+                {
+                    common.append(candidate);
+                    break;
+                }
+            }
+        }
+        artifacts = common;
+    }
+    return artifacts;
+}
+
+static QString artifactLabel(const FirmwareArtifact& artifact)
+{
+    const QString title = !artifact.title.isEmpty() ? artifact.title : QFileInfo(artifact.relativePath).fileName();
+    QStringList parts;
+    parts.append(title);
+    if (!artifact.version.isEmpty())
+        parts.append(artifact.version);
+    if (artifact.isDefault)
+        parts.append(QStringLiteral("по умолчанию"));
+    return parts.join(QStringLiteral(" · "));
+}
+
+static QVariantMap artifactToMap(const FirmwareArtifact& artifact)
+{
+    QVariantMap map;
+    map.insert(QStringLiteral("firmwareId"), artifact.firmwareId);
+    map.insert(QStringLiteral("target"), artifact.target);
+    map.insert(QStringLiteral("title"), artifact.title);
+    map.insert(QStringLiteral("version"), artifact.version);
+    map.insert(QStringLiteral("relativePath"), artifact.relativePath);
+    map.insert(QStringLiteral("sha256"), artifact.sha256);
+    map.insert(QStringLiteral("format"), artifact.format);
+    map.insert(QStringLiteral("addressBase"), artifact.addressBase);
+    map.insert(QStringLiteral("default"), artifact.isDefault);
+    map.insert(QStringLiteral("flashNum"), artifact.flashNum);
+    map.insert(QStringLiteral("offset"), artifact.offset);
+    map.insert(QStringLiteral("pageSize"), artifact.pageSize);
+    map.insert(QStringLiteral("pagesCount"), artifact.pagesCount);
+    return map;
 }
 
 MainWindow::MainWindow(ServiceContainer* services, QWidget* parent) :
@@ -77,6 +206,15 @@ MainWindow::~MainWindow()
         mWorkflowThread->quit();
         mWorkflowThread->wait(5000);
     }
+
+    const QSet<QThread*> uuidThreads = mUuidThreads;
+    for (QThread* thread : uuidThreads)
+    {
+        if (!thread || !thread->isRunning())
+            continue;
+        thread->quit();
+        thread->wait(5000);
+    }
 }
 
 void MainWindow::buildUi()
@@ -90,74 +228,40 @@ void MainWindow::buildUi()
     rootLayout->setSpacing(0);
     rootLayout->addWidget(buildSidebar());
 
-    QWidget* main = new QWidget(root);
-    main->setObjectName(QStringLiteral("main"));
-    QVBoxLayout* mainLayout = new QVBoxLayout(main);
-    mainLayout->setContentsMargins(22, 16, 22, 18);
-    mainLayout->setSpacing(14);
+    mPages = new QStackedWidget(root);
+    mPages->setObjectName(QStringLiteral("main"));
+    mPages->addWidget(buildDiscoveryPage());
+    mPages->addWidget(buildFirmwarePage());
+    rootLayout->addWidget(mPages, 1);
 
-    QHBoxLayout* header = new QHBoxLayout;
-    QVBoxLayout* title = new QVBoxLayout;
-    QLabel* h1 = new QLabel(QStringLiteral("Обнаружение и обслуживание устройств"));
-    h1->setObjectName(QStringLiteral("h1"));
-    QLabel* subtitle = new QLabel(QStringLiteral("Выбор линии связи, протокола и последовательный поиск устройств только в текущем контексте."));
-    subtitle->setObjectName(QStringLiteral("subtitle"));
-    title->addWidget(h1);
-    title->addWidget(subtitle);
-    header->addLayout(title);
-    header->addStretch();
-    QPushButton* refresh = new QPushButton(QStringLiteral("Обновить сценарии"));
-    connect(refresh, &QPushButton::clicked, this, [this]() {
-        QString error;
-        if (!mServices->reloadWorkflows(&error))
-        {
-            appendLog(QStringLiteral("Workflow reload failed: %1").arg(error));
-            QMessageBox::warning(this, QStringLiteral("Сценарии"), error);
-            return;
-        }
-        appendLog(QStringLiteral("Workflow scenarios reloaded"));
+    connect(mDiscoveryTabButton, &QPushButton::clicked, this, [this]() {
+        mPages->setCurrentIndex(0);
+        mDiscoveryTabButton->setChecked(true);
+        mFirmwareTabButton->setChecked(false);
     });
-    header->addWidget(refresh);
-    mFlashProgress = new QProgressBar;
-    mFlashProgress->setRange(0, 100);
-    mFlashProgress->setValue(0);
-    mFlashProgress->setFixedWidth(180);
-    mFlashProgress->setVisible(false);
-    mFlashProgress->setFormat(QStringLiteral("Flash %p%"));
-    header->addWidget(mFlashProgress);
-    mainLayout->addLayout(header);
-
-    mainLayout->addWidget(buildDiscoveryPanel());
-    mainLayout->addWidget(buildTablePanel(), 1);
-
-    mLog = new QPlainTextEdit;
-    mLog->setReadOnly(true);
-    mLog->setMaximumHeight(130);
-    mLog->setPlaceholderText(QStringLiteral("Журнал операций"));
-    mainLayout->addWidget(mLog);
-
-    QLabel* transportLabel = new QLabel(QStringLiteral("Сырой транспорт"));
-    transportLabel->setObjectName(QStringLiteral("subtitle"));
-    mainLayout->addWidget(transportLabel);
-    mTransportLog = new QPlainTextEdit;
-    mTransportLog->setReadOnly(true);
-    mTransportLog->setMaximumHeight(110);
-    mTransportLog->setPlaceholderText(QStringLiteral("TX/RX ASCII packets"));
-    mTransportLog->setObjectName(QStringLiteral("transportLog"));
-    mainLayout->addWidget(mTransportLog);
-
-    rootLayout->addWidget(main, 1);
+    connect(mFirmwareTabButton, &QPushButton::clicked, this, [this]() {
+        mPages->setCurrentIndex(1);
+        mDiscoveryTabButton->setChecked(false);
+        mFirmwareTabButton->setChecked(true);
+    });
+    mDiscoveryTabButton->setChecked(true);
     setCentralWidget(root);
 
     setStyleSheet(QStringLiteral(R"(
         QWidget#sidebar { background: #17212b; color: #d9e1e8; }
-        QWidget#main { background: #f4f6f8; }
+        QStackedWidget#main, QWidget#page { background: #f4f6f8; }
         QLabel#brandTitle { color: white; font-weight: 700; font-size: 15px; }
         QLabel#brandSub { color: #9fb0bf; font-size: 12px; }
         QLabel#h1 { color: #17212b; font-size: 22px; font-weight: 700; }
         QLabel#subtitle { color: #667584; font-size: 13px; }
         QPushButton { min-height: 34px; border: 1px solid #d8e0e5; border-radius: 7px; padding: 0 12px; background: white; color: #25313f; }
-        QPushButton#primary { background: #2563eb; border-color: #2563eb; color: white; }
+        QPushButton#primary, QPushButton#nav:checked { background: #2563eb; border-color: #2563eb; color: white; }
+        QPushButton#nav { background: #17212b; border-color: #334150; color: #d9e1e8; text-align: left; }
+        QPushButton#tablePing { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; background: #eff6ff; border: 1px solid #2563eb; color: #1d4ed8; }
+        QPushButton#tablePing:hover { background: #dbeafe; }
+        QPushButton#tableFlash { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; background: #2563eb; border: 1px solid #2563eb; color: white; }
+        QPushButton#tableFlash:hover { background: #1d4ed8; border-color: #1d4ed8; }
+        QPushButton#tablePing:disabled, QPushButton#tableFlash:disabled { background: #eef1f4; border-color: #c8d0d8; color: #8a98a6; }
         QFrame#band { background: white; border: 1px solid #d8e0e5; border-radius: 8px; }
         QComboBox, QLineEdit { min-height: 34px; border: 1px solid #d8e0e5; border-radius: 7px; padding: 0 8px; background: white; }
         QTableWidget { background: white; border: 0; gridline-color: #d8e0e5; selection-background-color: #edf5ff; selection-color: #17212b; alternate-background-color: #fafcff; }
@@ -185,13 +289,94 @@ QWidget* MainWindow::buildSidebar()
     layout->addWidget(brandTitle);
     layout->addWidget(brandSub);
 
-    QPushButton* discovery = new QPushButton(QStringLiteral("Обнаружение"));
-    discovery->setObjectName(QStringLiteral("primary"));
-    QPushButton* firmware = new QPushButton(QStringLiteral("Прошивки"));
-    layout->addWidget(discovery);
-    layout->addWidget(firmware);
+    mDiscoveryTabButton = new QPushButton(QStringLiteral("Обнаружение"));
+    mDiscoveryTabButton->setObjectName(QStringLiteral("nav"));
+    mDiscoveryTabButton->setCheckable(true);
+    mFirmwareTabButton = new QPushButton(QStringLiteral("Прошивки"));
+    mFirmwareTabButton->setObjectName(QStringLiteral("nav"));
+    mFirmwareTabButton->setCheckable(true);
+    layout->addWidget(mDiscoveryTabButton);
+    layout->addWidget(mFirmwareTabButton);
     layout->addStretch();
     return sidebar;
+}
+
+QWidget* MainWindow::buildDiscoveryPage()
+{
+    QWidget* page = new QWidget;
+    page->setObjectName(QStringLiteral("page"));
+    QVBoxLayout* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(22, 16, 22, 18);
+    layout->setSpacing(14);
+
+    QLabel* h1 = new QLabel(QStringLiteral("Обнаружение устройств"));
+    h1->setObjectName(QStringLiteral("h1"));
+    QLabel* subtitle = new QLabel(QStringLiteral("Задайте параметры линии связи и выполните поиск."));
+    subtitle->setObjectName(QStringLiteral("subtitle"));
+    layout->addWidget(h1);
+    layout->addWidget(subtitle);
+    layout->addWidget(buildDiscoveryPanel());
+    layout->addWidget(buildDiscoveryTablePanel(), 1);
+    return page;
+}
+
+QWidget* MainWindow::buildFirmwarePage()
+{
+    QWidget* page = new QWidget;
+    page->setObjectName(QStringLiteral("page"));
+    QVBoxLayout* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(22, 16, 22, 18);
+    layout->setSpacing(14);
+
+    QHBoxLayout* header = new QHBoxLayout;
+    QVBoxLayout* title = new QVBoxLayout;
+    QLabel* h1 = new QLabel(QStringLiteral("Прошивки"));
+    h1->setObjectName(QStringLiteral("h1"));
+    QLabel* subtitle = new QLabel(QStringLiteral("Прошивка отдельных устройств или группы по общим доступным переходам."));
+    subtitle->setObjectName(QStringLiteral("subtitle"));
+    title->addWidget(h1);
+    title->addWidget(subtitle);
+    header->addLayout(title);
+    header->addStretch();
+
+    mFlashProgress = new QProgressBar;
+    mFlashProgress->setRange(0, 100);
+    mFlashProgress->setValue(0);
+    mFlashProgress->setFixedWidth(180);
+    mFlashProgress->setVisible(false);
+    mFlashProgress->setFormat(QStringLiteral("Flash %p%"));
+    header->addWidget(mFlashProgress);
+    layout->addLayout(header);
+    layout->addWidget(buildFirmwareTablePanel(), 3);
+
+    QSplitter* logs = new QSplitter(Qt::Horizontal);
+    QWidget* operationPane = new QWidget;
+    QVBoxLayout* operationLayout = new QVBoxLayout(operationPane);
+    operationLayout->setContentsMargins(0, 0, 0, 0);
+    QLabel* operationLabel = new QLabel(QStringLiteral("Журнал операций"));
+    operationLabel->setObjectName(QStringLiteral("subtitle"));
+    operationLayout->addWidget(operationLabel);
+    mLog = new QPlainTextEdit;
+    mLog->setReadOnly(true);
+    mLog->setPlaceholderText(QStringLiteral("Операции обнаружения и прошивки"));
+    operationLayout->addWidget(mLog);
+    logs->addWidget(operationPane);
+
+    QWidget* transportPane = new QWidget;
+    QVBoxLayout* transportLayout = new QVBoxLayout(transportPane);
+    transportLayout->setContentsMargins(0, 0, 0, 0);
+    QLabel* transportLabel = new QLabel(QStringLiteral("Сырой транспорт"));
+    transportLabel->setObjectName(QStringLiteral("subtitle"));
+    transportLayout->addWidget(transportLabel);
+    mTransportLog = new QPlainTextEdit;
+    mTransportLog->setReadOnly(true);
+    mTransportLog->setPlaceholderText(QStringLiteral("TX/RX ASCII packets"));
+    mTransportLog->setObjectName(QStringLiteral("transportLog"));
+    transportLayout->addWidget(mTransportLog);
+    logs->addWidget(transportPane);
+    logs->setSizes({620, 420});
+    layout->addWidget(logs, 2);
+    return page;
 }
 
 QWidget* MainWindow::buildDiscoveryPanel()
@@ -200,21 +385,29 @@ QWidget* MainWindow::buildDiscoveryPanel()
     frame->setObjectName(QStringLiteral("band"));
     QVBoxLayout* layout = new QVBoxLayout(frame);
     layout->setContentsMargins(14, 14, 14, 14);
-    layout->setSpacing(12);
+    layout->setSpacing(8);
 
-    QHBoxLayout* modeRow = new QHBoxLayout;
+    const auto addFieldRow = [](QVBoxLayout* parent, const QString& text, QWidget* field) {
+        QHBoxLayout* row = new QHBoxLayout;
+        QLabel* label = new QLabel(text);
+        label->setFixedWidth(160);
+        field->setFixedWidth(420);
+        row->addWidget(label);
+        row->addWidget(field);
+        row->addStretch();
+        parent->addLayout(row);
+    };
+
     mLineMode = new QComboBox;
     mLineMode->addItem(QStringLiteral("UDP broadcast"), QStringLiteral("udp"));
     mLineMode->addItem(QStringLiteral("RS-485"), QStringLiteral("rs485"));
     configureCombo(mLineMode);
-    modeRow->addWidget(new QLabel(QStringLiteral("Линия связи")));
-    modeRow->addWidget(mLineMode);
-    modeRow->addStretch();
-    layout->addLayout(modeRow);
+    addFieldRow(layout, QStringLiteral("Линия связи"), mLineMode);
 
     mUdpPanel = new QWidget;
-    QHBoxLayout* udp = new QHBoxLayout(mUdpPanel);
+    QVBoxLayout* udp = new QVBoxLayout(mUdpPanel);
     udp->setContentsMargins(0, 0, 0, 0);
+    udp->setSpacing(8);
     mNetworkInterface = new QComboBox;
     mNetworkInterface->addItems(availableNetworkInterfaces());
     configureCombo(mNetworkInterface);
@@ -222,15 +415,14 @@ QWidget* MainWindow::buildDiscoveryPanel()
     mUdpProtocol->addItem(QStringLiteral("Unicorn ASCII · FINE / 0xFF"), QStringLiteral("unicorn-ascii"));
     mUdpProtocol->addItem(QStringLiteral("Modbus RTU · RS-485"), QStringLiteral("modbus-rtu"));
     configureCombo(mUdpProtocol);
-    udp->addWidget(new QLabel(QStringLiteral("Сетевой интерфейс")));
-    udp->addWidget(mNetworkInterface, 1);
-    udp->addWidget(new QLabel(QStringLiteral("Протокол")));
-    udp->addWidget(mUdpProtocol, 1);
+    addFieldRow(udp, QStringLiteral("Сетевой интерфейс"), mNetworkInterface);
+    addFieldRow(udp, QStringLiteral("Протокол"), mUdpProtocol);
     layout->addWidget(mUdpPanel);
 
     mRs485Panel = new QWidget;
-    QHBoxLayout* rs = new QHBoxLayout(mRs485Panel);
+    QVBoxLayout* rs = new QVBoxLayout(mRs485Panel);
     rs->setContentsMargins(0, 0, 0, 0);
+    rs->setSpacing(8);
     mSerialPort = new QComboBox;
     mSerialPort->addItems(availableSerialPorts());
     configureCombo(mSerialPort);
@@ -240,26 +432,28 @@ QWidget* MainWindow::buildDiscoveryPanel()
     configureCombo(mRs485Protocol);
     mAddressStart = new QLineEdit(QStringLiteral("1"));
     mAddressEnd = new QLineEdit(QStringLiteral("64"));
-    rs->addWidget(new QLabel(QStringLiteral("Порт")));
-    rs->addWidget(mSerialPort);
-    rs->addWidget(new QLabel(QStringLiteral("Протокол")));
-    rs->addWidget(mRs485Protocol);
-    rs->addWidget(new QLabel(QStringLiteral("Адрес старт")));
-    rs->addWidget(mAddressStart);
-    rs->addWidget(new QLabel(QStringLiteral("Адрес конец")));
-    rs->addWidget(mAddressEnd);
+    addFieldRow(rs, QStringLiteral("Порт"), mSerialPort);
+    addFieldRow(rs, QStringLiteral("Протокол"), mRs485Protocol);
+    addFieldRow(rs, QStringLiteral("Адрес начала"), mAddressStart);
+    addFieldRow(rs, QStringLiteral("Адрес конца"), mAddressEnd);
     layout->addWidget(mRs485Panel);
 
     mSearchButton = new QPushButton(QStringLiteral("Broadcast поиск"));
     mSearchButton->setObjectName(QStringLiteral("primary"));
-    layout->addWidget(mSearchButton, 0, Qt::AlignRight);
+    QHBoxLayout* buttonRow = new QHBoxLayout;
+    QLabel* buttonSpacer = new QLabel;
+    buttonSpacer->setFixedWidth(160);
+    buttonRow->addWidget(buttonSpacer);
+    buttonRow->addWidget(mSearchButton, 0, Qt::AlignLeft);
+    buttonRow->addStretch();
+    layout->addLayout(buttonRow);
 
     connect(mLineMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::updateLineMode);
     connect(mSearchButton, &QPushButton::clicked, this, &MainWindow::startDiscovery);
     return frame;
 }
 
-QWidget* MainWindow::buildTablePanel()
+QWidget* MainWindow::buildDiscoveryTablePanel()
 {
     QFrame* frame = new QFrame;
     frame->setObjectName(QStringLiteral("band"));
@@ -270,65 +464,106 @@ QWidget* MainWindow::buildTablePanel()
     QWidget* filter = new QWidget;
     QHBoxLayout* filterLayout = new QHBoxLayout(filter);
     filterLayout->setContentsMargins(14, 12, 14, 12);
-    QLabel* title = new QLabel(QStringLiteral("<b>Устройства текущего поиска</b><br><span style='color:#667584'>Текущая линия и протокол</span>"));
-    mSearch = new QLineEdit(QStringLiteral("Unicorn ASCII"));
-    mSearch->setMaximumWidth(260);
-    mBulkButton = new QPushButton(QStringLiteral("Действия выбранных"));
-    mBulkButton->setObjectName(QStringLiteral("primary"));
-    mBulkMenu = new QMenu(mBulkButton);
-    mBulkButton->setMenu(mBulkMenu);
-    filterLayout->addWidget(title);
+    filterLayout->addWidget(new QLabel(QStringLiteral("<b>Устройства текущего поиска</b>")));
     filterLayout->addStretch();
-    filterLayout->addWidget(mSearch);
-    filterLayout->addWidget(mBulkButton);
     layout->addWidget(filter);
 
-    mTable = new QTableWidget(0, ColCount);
-    mTable->setHorizontalHeaderLabels({
-        QString(), QStringLiteral("Устройство"), QStringLiteral("Номер"), QStringLiteral("Канал"),
-        QStringLiteral("Тип"), QStringLiteral("Версия"), QStringLiteral("Короткое описание"),
-        QStringLiteral("Статус"), QStringLiteral("Действия")
+    mDiscoveryTable = new QTableWidget(0, DiscoveryColumnCount);
+    mDiscoveryTable->setHorizontalHeaderLabels({
+        QStringLiteral("Device"), QStringLiteral("Number"), QStringLiteral("Address"),
+        QStringLiteral("Channel"), QStringLiteral("State"), QStringLiteral("Ping")
     });
-    mTable->verticalHeader()->setVisible(false);
-    mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    mTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    mTable->setAlternatingRowColors(true);
-    QHeaderView* header = mTable->horizontalHeader();
+    mDiscoveryTable->verticalHeader()->setVisible(false);
+    mDiscoveryTable->verticalHeader()->setMinimumSectionSize(54);
+    mDiscoveryTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    mDiscoveryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mDiscoveryTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mDiscoveryTable->setAlternatingRowColors(true);
+    mDiscoveryTable->setWordWrap(true);
+    QHeaderView* header = mDiscoveryTable->horizontalHeader();
     header->setSectionResizeMode(QHeaderView::Interactive);
     header->setStretchLastSection(false);
     header->setMinimumSectionSize(48);
-    mTable->setColumnWidth(ColCheck, 42);
-    mTable->setColumnWidth(ColDevice, 220);
-    mTable->setColumnWidth(ColNumber, 96);
-    mTable->setColumnWidth(ColAddress, 88);
-    mTable->setColumnWidth(ColChannel, 210);
-    mTable->setColumnWidth(ColType, 88);
-    mTable->setColumnWidth(ColVersion, 88);
-    mTable->setColumnWidth(ColState, 108);
-    mTable->setColumnWidth(ColDescription, 260);
-    mTable->setColumnWidth(ColStatus, 136);
-    mTable->setColumnWidth(ColActions, 180);
-    mTable->setHorizontalHeaderItem(ColAddress, new QTableWidgetItem(QStringLiteral("Адрес")));
-    mTable->setHorizontalHeaderItem(ColDevice, new QTableWidgetItem(QStringLiteral("Device")));
-    mTable->setHorizontalHeaderItem(ColNumber, new QTableWidgetItem(QStringLiteral("Number")));
-    mTable->setHorizontalHeaderItem(ColAddress, new QTableWidgetItem(QStringLiteral("Address")));
-    mTable->setHorizontalHeaderItem(ColChannel, new QTableWidgetItem(QStringLiteral("Channel")));
-    mTable->setHorizontalHeaderItem(ColType, new QTableWidgetItem(QStringLiteral("Type")));
-    mTable->setHorizontalHeaderItem(ColVersion, new QTableWidgetItem(QStringLiteral("Version")));
-    mTable->setHorizontalHeaderItem(ColState, new QTableWidgetItem(QStringLiteral("State")));
-    mTable->setHorizontalHeaderItem(ColDescription, new QTableWidgetItem(QStringLiteral("Description")));
-    mTable->setHorizontalHeaderItem(ColStatus, new QTableWidgetItem(QStringLiteral("Status")));
-    mTable->setHorizontalHeaderItem(ColActions, new QTableWidgetItem(QStringLiteral("Actions")));
-    layout->addWidget(mTable, 1);
+    mDiscoveryTable->setColumnWidth(DiscoveryDevice, 440);
+    mDiscoveryTable->setColumnWidth(DiscoveryNumber, 105);
+    mDiscoveryTable->setColumnWidth(DiscoveryAddress, 85);
+    mDiscoveryTable->setColumnWidth(DiscoveryChannel, 220);
+    mDiscoveryTable->setColumnWidth(DiscoveryState, 105);
+    mDiscoveryTable->setColumnWidth(DiscoveryPing, 90);
+    mDiscoveryTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(header, &QHeaderView::sectionResized, mDiscoveryTable, [this]() {
+        mDiscoveryTable->resizeRowsToContents();
+    });
+    layout->addWidget(mDiscoveryTable, 1);
+    return frame;
+}
 
-    connect(mTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
+QWidget* MainWindow::buildFirmwareTablePanel()
+{
+    QFrame* frame = new QFrame;
+    frame->setObjectName(QStringLiteral("band"));
+    QVBoxLayout* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    QWidget* toolbar = new QWidget;
+    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(14, 12, 14, 12);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Все обнаруженные устройства</b>")));
+    toolbarLayout->addStretch();
+    mBulkFlashButton = new QPushButton(QStringLiteral("Прошить выбранные"));
+    mBulkFlashButton->setObjectName(QStringLiteral("primary"));
+    mBulkFlashButton->setAttribute(Qt::WA_AlwaysShowToolTips);
+    toolbarLayout->addWidget(mBulkFlashButton);
+    layout->addWidget(toolbar);
+
+    mFirmwareTable = new QTableWidget(0, FirmwareColumnCount);
+    mFirmwareTable->setHorizontalHeaderLabels({
+        QString(), QString(), QStringLiteral("Device"), QStringLiteral("Number"),
+        QStringLiteral("Address"), QStringLiteral("Channel"), QStringLiteral("Firmware"),
+        QStringLiteral("State")
+    });
+    mFirmwareTable->verticalHeader()->setVisible(false);
+    mFirmwareTable->verticalHeader()->setMinimumSectionSize(54);
+    mFirmwareTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    mFirmwareTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mFirmwareTable->setSelectionMode(QAbstractItemView::NoSelection);
+    mFirmwareTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mFirmwareTable->setAlternatingRowColors(true);
+    mFirmwareTable->setWordWrap(true);
+    QHeaderView* header = mFirmwareTable->horizontalHeader();
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    header->setStretchLastSection(false);
+    header->setMinimumSectionSize(42);
+    mFirmwareTable->setColumnWidth(FirmwareCheck, 42);
+    mFirmwareTable->setColumnWidth(FirmwareActions, 90);
+    mFirmwareTable->setColumnWidth(FirmwareDevice, 420);
+    mFirmwareTable->setColumnWidth(FirmwareNumber, 95);
+    mFirmwareTable->setColumnWidth(FirmwareAddress, 78);
+    mFirmwareTable->setColumnWidth(FirmwareChannel, 180);
+    mFirmwareTable->setColumnWidth(FirmwareCurrent, 205);
+    mFirmwareTable->setColumnWidth(FirmwareState, 95);
+    mFirmwareTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    layout->addWidget(mFirmwareTable, 1);
+
+    connect(mFirmwareTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
+    connect(header, &QHeaderView::sectionResized, mFirmwareTable, [this]() {
+        mFirmwareTable->resizeRowsToContents();
+    });
+    connect(mBulkFlashButton, &QPushButton::clicked, this, [this]() {
+        const QVector<std::shared_ptr<DeviceBase>> selected = selectedDevices();
+        if (!selected.isEmpty())
+            executeAction(actionById(QStringLiteral("flash.application.write")), selected);
+    });
     return frame;
 }
 
 void MainWindow::startDiscovery()
 {
+    ++mDiscoveryGeneration;
     mDevices.clear();
-    mTable->setRowCount(0);
+    mDiscoveryTable->setRowCount(0);
+    mFirmwareTable->setRowCount(0);
     updateBulkMenu();
     setBusy(true);
 
@@ -365,9 +600,93 @@ void MainWindow::onDeviceFound(DeviceIdentity device)
     if (!deviceObject)
         return;
 
+    const QString endpointKey = QStringLiteral("%1|%2")
+        .arg(mDiscoveryGeneration)
+        .arg(device.endpoint);
+    if (mPendingUuidEndpoints.contains(endpointKey))
+        return;
+
+    const quint64 requestId = mNextUuidRequestId++;
+    mPendingUuidEndpoints.insert(endpointKey);
+    mPendingUuidReads.insert(requestId, {deviceObject, mDiscoveryGeneration, endpointKey});
+
+    QThread* thread = new QThread;
+    thread->setObjectName(QStringLiteral("uuid-%1").arg(requestId));
+    UuidWorker* worker = new UuidWorker(requestId, deviceObject);
+    worker->moveToThread(thread);
+    mUuidThreads.insert(thread);
+
+    connect(thread, &QThread::started, worker, &UuidWorker::run);
+    connect(worker, &UuidWorker::finished, this, &MainWindow::onUuidReadFinished);
+    connect(worker, &UuidWorker::finished, thread, &QThread::quit);
+    connect(worker, &UuidWorker::finished, worker, &UuidWorker::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread]() {
+        mUuidThreads.remove(thread);
+    });
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    thread->start();
+}
+
+void MainWindow::onUuidReadFinished(quint64 requestId,
+    const QString& uuid,
+    const QString& error,
+    const QString& rawResponse)
+{
+    const auto pendingIt = mPendingUuidReads.find(requestId);
+    if (pendingIt == mPendingUuidReads.end())
+        return;
+
+    const PendingUuidRead pending = pendingIt.value();
+    mPendingUuidReads.erase(pendingIt);
+    mPendingUuidEndpoints.remove(pending.endpointKey);
+    if (!pending.device || pending.discoveryGeneration != mDiscoveryGeneration)
+        return;
+
+    DeviceIdentity device = pending.device->identity();
+    if (!uuid.isEmpty())
+    {
+        device.uuid = uuid;
+        device.id = uuid;
+        pending.device->updateIdentity(device);
+        appendLog(QStringLiteral("[%1] UUID %2").arg(device.typeHex(), device.uuid));
+    }
+    else
+    {
+        appendLog(QStringLiteral("[%1] UUID read failed at %2: %3")
+            .arg(device.typeHex(), device.endpoint, error));
+    }
+    if (!rawResponse.isEmpty())
+        appendTransportLog(QStringLiteral("[%1] %2").arg(device.typeHex(), rawResponse));
+
+    mergeDiscoveredDevice(pending.device);
+
+    bool hasPendingCurrentDiscovery = false;
+    for (auto it = mPendingUuidReads.cbegin(); it != mPendingUuidReads.cend(); ++it)
+    {
+        if (it.value().discoveryGeneration == mDiscoveryGeneration)
+        {
+            hasPendingCurrentDiscovery = true;
+            break;
+        }
+    }
+    if (!hasPendingCurrentDiscovery)
+        appendLog(QStringLiteral("Found %1 device(s); UUID identification finished").arg(mDevices.size()));
+}
+
+void MainWindow::mergeDiscoveredDevice(const std::shared_ptr<DeviceBase>& deviceObject)
+{
+    if (!deviceObject)
+        return;
+
+    const DeviceIdentity& device = deviceObject->identity();
+
     for (int i = 0; i < mDevices.size(); ++i)
     {
-        if (mDevices.at(i)->identity().id == device.id)
+        const DeviceIdentity& existing = mDevices.at(i)->identity();
+        const bool sameUuid = !device.uuid.isEmpty() && !existing.uuid.isEmpty()
+            && device.uuid.compare(existing.uuid, Qt::CaseInsensitive) == 0;
+        const bool sameEndpoint = existing.endpoint == device.endpoint;
+        if (sameUuid || sameEndpoint)
         {
             if (mDevices.at(i)->className() == deviceObject->className())
                 mDevices.at(i)->updateIdentity(device);
@@ -386,7 +705,15 @@ void MainWindow::onDeviceFound(DeviceIdentity device)
 void MainWindow::onDiscoveryFinished()
 {
     setBusy(false);
-    appendLog(QStringLiteral("Found %1 device(s)").arg(mDevices.size()));
+    int pendingCount = 0;
+    for (auto it = mPendingUuidReads.cbegin(); it != mPendingUuidReads.cend(); ++it)
+    {
+        if (it.value().discoveryGeneration == mDiscoveryGeneration)
+            ++pendingCount;
+    }
+    appendLog(pendingCount > 0
+        ? QStringLiteral("Discovery finished; identifying UUID for %1 device(s)").arg(pendingCount)
+        : QStringLiteral("Found %1 device(s)").arg(mDevices.size()));
 }
 
 void MainWindow::updateLineMode()
@@ -413,6 +740,15 @@ void MainWindow::executeAction(const ActionSpec& action, const QVector<std::shar
 {
     if (action.id.isEmpty() || devices.isEmpty())
         return;
+
+    for (const std::shared_ptr<DeviceBase>& device : devices)
+    {
+        if (isDeviceBusy(device))
+        {
+            appendLog(QStringLiteral("Operation %1 ignored: device is busy").arg(action.id));
+            return;
+        }
+    }
 
     if (action.id == QStringLiteral("device.ping"))
     {
@@ -444,16 +780,32 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
     connect(worker, &WorkflowWorker::logMessage, this, &MainWindow::appendLog);
     connect(worker, &WorkflowWorker::transportLogMessage, this, &MainWindow::appendTransportLog);
     connect(worker, &WorkflowWorker::progressChanged, this, &MainWindow::onWorkflowProgress);
+    connect(worker, &WorkflowWorker::finished, this, [this, devices](bool) {
+        for (const std::shared_ptr<DeviceBase>& device : devices)
+        {
+            for (int row = 0; row < mDevices.size(); ++row)
+            {
+                if (mDevices.at(row) == device)
+                {
+                    updateDeviceRow(row, device);
+                    break;
+                }
+            }
+        }
+        updateBulkMenu();
+    });
     connect(worker, &WorkflowWorker::finished, thread, &QThread::quit);
     connect(worker, &WorkflowWorker::finished, worker, &WorkflowWorker::deleteLater);
     connect(thread, &QThread::finished, thread, &QThread::deleteLater);
-    connect(thread, &QThread::finished, this, [this, thread]() {
+    connect(thread, &QThread::finished, this, [this, thread, devices]() {
         if (mWorkflowThread == thread)
             mWorkflowThread = nullptr;
+        setDevicesBusy(devices, false);
         setActionBusy(false);
     });
 
     mWorkflowThread = thread;
+    setDevicesBusy(devices, true);
     setActionBusy(true);
     thread->start();
 }
@@ -579,12 +931,111 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
     if (isFlashAction(action.id))
     {
         const QString title = action.title.isEmpty() ? action.id : action.title;
-        const QString message = devices.size() == 1
-            ? QStringLiteral("%1 будет выполнено для 1 устройства.\nПродолжить?").arg(title)
-            : QStringLiteral("%1 будет выполнено для %2 устройств.\nПродолжить?")
-                .arg(title)
-                .arg(devices.size());
-        return QMessageBox::question(this, title, message, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        const QVector<FirmwareArtifact> artifacts = artifactsForTarget(devices, action.target);
+        const bool graphControlled = action.target == QStringLiteral("application")
+            && devices.first() && !devices.first()->identity().firmwareVersions.isEmpty();
+
+        QDialog dialog(this);
+        dialog.setWindowTitle(title);
+
+        QVBoxLayout* layout = new QVBoxLayout(&dialog);
+        QLabel* intro = new QLabel(graphControlled
+            ? (devices.size() == 1
+                ? QStringLiteral("Текущая прошивка: %1. Выберите разрешённый переход.")
+                    .arg(devices.first()->identity().currentFirmwareId.isEmpty()
+                        ? QStringLiteral("не определена")
+                        : devices.first()->identity().currentFirmwareId)
+                : QStringLiteral("Выберите переход, разрешённый для всех %1 устройств.").arg(devices.size()))
+            : (devices.size() == 1
+                ? QStringLiteral("Выберите файл прошивки для 1 устройства.")
+                : QStringLiteral("Выберите файл прошивки для %1 устройств.").arg(devices.size())));
+        intro->setWordWrap(true);
+        layout->addWidget(intro);
+
+        QFormLayout* form = new QFormLayout;
+        QComboBox* artifactCombo = new QComboBox;
+        configureCombo(artifactCombo);
+        int defaultIndex = 0;
+        for (int i = 0; i < artifacts.size(); ++i)
+        {
+            artifactCombo->addItem(artifactLabel(artifacts.at(i)), i);
+            if (artifacts.at(i).isDefault)
+                defaultIndex = i;
+        }
+        if (artifactCombo->count() == 0)
+            artifactCombo->addItem(graphControlled
+                ? QStringLiteral("Нет разрешённых переходов")
+                : QStringLiteral("Нет прошивки в каталоге"), -1);
+        artifactCombo->setCurrentIndex(defaultIndex);
+        form->addRow(QStringLiteral("Прошивка"), artifactCombo);
+
+        QLineEdit* customFile = new QLineEdit;
+        customFile->setReadOnly(true);
+        QPushButton* browse = new QPushButton(QStringLiteral("Выбрать файл..."));
+        customFile->setEnabled(!graphControlled);
+        browse->setEnabled(!graphControlled);
+        QHBoxLayout* fileRow = new QHBoxLayout;
+        fileRow->addWidget(customFile, 1);
+        fileRow->addWidget(browse);
+        form->addRow(QStringLiteral("Другой файл"), fileRow);
+
+        QCheckBox* verify = new QCheckBox(QStringLiteral("Проверить после записи"));
+        verify->setChecked(true);
+        verify->setVisible(!graphControlled);
+        form->addRow(QString(), verify);
+        layout->addLayout(form);
+
+        QLabel* warning = new QLabel(QStringLiteral("Запись application flash выполняется через bootloader block flash: pages are written with command 0x43, verify reads back with 0x44."));
+        if (graphControlled)
+            warning->setText(QStringLiteral("Порядок reset, flash, verify, restart и ожидания application задаётся выбранным переходом в графе прошивок."));
+        warning->setWordWrap(true);
+        layout->addWidget(warning);
+
+        connect(browse, &QPushButton::clicked, &dialog, [customFile]() {
+            const QString fileName = QFileDialog::getOpenFileName(nullptr,
+                QStringLiteral("Выбрать прошивку"),
+                QString(),
+                QStringLiteral("Firmware (*.bin *.hex *.ldr);;All files (*.*)"));
+            if (!fileName.isEmpty())
+                customFile->setText(fileName);
+        });
+
+        QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+        buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Прошить"));
+        buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!artifacts.isEmpty() || !graphControlled);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        layout->addWidget(buttons);
+
+        if (dialog.exec() != QDialog::Accepted)
+            return false;
+
+        FirmwareArtifact selected;
+        const int selectedIndex = artifactCombo->currentData().toInt();
+        if (selectedIndex >= 0 && selectedIndex < artifacts.size())
+            selected = artifacts.at(selectedIndex);
+        if (!graphControlled && !customFile->text().isEmpty())
+        {
+            selected.relativePath = customFile->text();
+            selected.title = QFileInfo(customFile->text()).fileName();
+            selected.version = QStringLiteral("custom");
+            selected.sha256.clear();
+            selected.isDefault = false;
+            selected.target = action.target;
+        }
+        if (selected.relativePath.isEmpty())
+        {
+            QMessageBox::warning(this, title, QStringLiteral("Не выбрана прошивка."));
+            return false;
+        }
+
+        parameters->insert(QStringLiteral("artifact"), artifactToMap(selected));
+        if (!selected.firmwareId.isEmpty())
+            parameters->insert(QStringLiteral("targetFirmwareId"), selected.firmwareId);
+        if (!graphControlled)
+            parameters->insert(QStringLiteral("verifyAfterWrite"), verify->isChecked());
+        return true;
     }
 
     const QString title = action.title.isEmpty() ? action.id : action.title;
@@ -596,80 +1047,178 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
 
 void MainWindow::addDeviceRow(const std::shared_ptr<DeviceBase>& device)
 {
-    const int row = mTable->rowCount();
-    mTable->insertRow(row);
+    const int row = mDevices.size() - 1;
+    mDiscoveryTable->insertRow(row);
+    mFirmwareTable->insertRow(row);
     updateDeviceRow(row, device);
 }
 
 void MainWindow::updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
 {
-    if (!device)
+    updateDiscoveryDeviceRow(row, device);
+    updateFirmwareDeviceRow(row, device);
+}
+
+bool MainWindow::isDeviceBusy(const std::shared_ptr<DeviceBase>& device) const
+{
+    return device && mBusyDevices.contains(device.get());
+}
+
+void MainWindow::setDevicesBusy(const QVector<std::shared_ptr<DeviceBase>>& devices, bool busy)
+{
+    for (const std::shared_ptr<DeviceBase>& device : devices)
+    {
+        if (!device)
+            continue;
+        if (busy)
+            mBusyDevices.insert(device.get());
+        else
+            mBusyDevices.remove(device.get());
+    }
+
+    for (int row = 0; row < mDevices.size(); ++row)
+        updateDeviceRow(row, mDevices.at(row));
+    updateBulkMenu();
+}
+
+void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
+{
+    if (!device || row < 0 || row >= mDiscoveryTable->rowCount())
         return;
 
     const DeviceIdentity& identity = device->identity();
-    const Qt::CheckState checkState = mTable->item(row, ColCheck) ? mTable->item(row, ColCheck)->checkState() : Qt::Unchecked;
-    QTableWidgetItem* check = new QTableWidgetItem;
-    check->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-    check->setCheckState(checkState);
-    mTable->setItem(row, ColCheck, check);
+    const QString deviceText = identity.description.isEmpty()
+        ? identity.name
+        : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
+    QTableWidgetItem* deviceItem = new QTableWidgetItem(deviceText);
+    deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
+        .arg(identity.typeHex(), identity.versionHex(), identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
+    mDiscoveryTable->setItem(row, DiscoveryDevice, deviceItem);
 
-    mTable->setItem(row, ColDevice, new QTableWidgetItem(identity.name));
+    const QString numberText = !identity.serialNumber.isEmpty() ? identity.serialNumber : identity.id;
+    mDiscoveryTable->setItem(row, DiscoveryNumber, new QTableWidgetItem(numberText));
+    mDiscoveryTable->setItem(row, DiscoveryAddress,
+        new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString()));
+    mDiscoveryTable->setItem(row, DiscoveryChannel,
+        new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
+    QTableWidgetItem* state = new QTableWidgetItem(identity.state);
+    state->setForeground(identity.isBootloader() ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#2563eb")));
+    mDiscoveryTable->setItem(row, DiscoveryState, state);
+
+    const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
+    bool canPing = false;
+    for (const ActionSpec& spec : specs)
+        canPing = canPing || spec.id == QStringLiteral("device.ping");
+    const bool deviceBusy = isDeviceBusy(device);
+    QPushButton* ping = new QPushButton;
+    ping->setObjectName(QStringLiteral("tablePing"));
+    ping->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    ping->setIconSize(QSize(18, 18));
+    ping->setAccessibleName(QStringLiteral("Ping"));
+    ping->setToolTip(deviceBusy
+        ? QStringLiteral("Дождитесь завершения текущей операции с устройством")
+        : QStringLiteral("Проверить связь с устройством"));
+    ping->setEnabled(canPing && !deviceBusy);
+    connect(ping, &QPushButton::clicked, this, [this, row]() {
+        runActionForRow(row, QStringLiteral("device.ping"));
+    });
+    mDiscoveryTable->setCellWidget(row, DiscoveryPing, tableButtonCell(ping));
+    mDiscoveryTable->resizeRowToContents(row);
+}
+
+void MainWindow::updateFirmwareDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
+{
+    if (!device || row < 0 || row >= mFirmwareTable->rowCount())
+        return;
+
+    const DeviceIdentity& identity = device->identity();
+    const Qt::CheckState checkState = mFirmwareTable->item(row, FirmwareCheck)
+        ? mFirmwareTable->item(row, FirmwareCheck)->checkState()
+        : Qt::Unchecked;
+    QTableWidgetItem* check = new QTableWidgetItem;
+    check->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+    check->setTextAlignment(Qt::AlignCenter);
+    check->setToolTip(QStringLiteral("Выбрать устройство для массовой прошивки"));
+    check->setCheckState(checkState);
+    mFirmwareTable->setItem(row, FirmwareCheck, check);
+
+    const QString deviceText = identity.description.isEmpty()
+        ? identity.name
+        : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
+    QTableWidgetItem* deviceItem = new QTableWidgetItem(deviceText);
+    deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
+        .arg(identity.typeHex(), identity.versionHex(), identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
+    mFirmwareTable->setItem(row, FirmwareDevice, deviceItem);
     const QString numberText = !identity.serialNumber.isEmpty() ? identity.serialNumber : identity.id;
     QTableWidgetItem* number = new QTableWidgetItem(numberText);
     if (identity.serialNumber.isEmpty())
         number->setToolTip(QStringLiteral("ID %1").arg(identity.id));
-    mTable->setItem(row, ColNumber, number);
+    mFirmwareTable->setItem(row, FirmwareNumber, number);
     QTableWidgetItem* address = new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString());
     address->setToolTip(QStringLiteral("Modbus address"));
-    mTable->setItem(row, ColAddress, address);
-    mTable->setItem(row, ColChannel, new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
-    mTable->setItem(row, ColType, new QTableWidgetItem(identity.typeHex()));
-    mTable->setItem(row, ColVersion, new QTableWidgetItem(identity.versionHex()));
+    mFirmwareTable->setItem(row, FirmwareAddress, address);
+    mFirmwareTable->setItem(row, FirmwareChannel,
+        new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
+    mFirmwareTable->setItem(row, FirmwareCurrent,
+        new QTableWidgetItem(identity.currentFirmwareId.isEmpty() ? QStringLiteral("—") : identity.currentFirmwareId));
     QTableWidgetItem* state = new QTableWidgetItem(identity.state);
     state->setForeground(identity.isBootloader() ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#2563eb")));
-    mTable->setItem(row, ColState, state);
-    const QString displayDescription = QStringLiteral("%1 (%2 %3)")
-        .arg(identity.description, identity.typeHex(), identity.versionHex());
-    QTableWidgetItem* desc = new QTableWidgetItem(displayDescription);
-    if (identity.descriptionMismatch)
-        desc->setToolTip(QStringLiteral("JSON ожидает: %1").arg(identity.expectedDescription));
-    mTable->setItem(row, ColDescription, desc);
-    QTableWidgetItem* status = new QTableWidgetItem(identity.status);
-    status->setForeground(identity.descriptionMismatch ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#15803d")));
-    mTable->setItem(row, ColStatus, status);
+    mFirmwareTable->setItem(row, FirmwareState, state);
 
-    QWidget* actions = new QWidget;
-    QHBoxLayout* layout = new QHBoxLayout(actions);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
     const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
+    bool canPing = false;
+    bool supportsFlash = false;
     for (const ActionSpec& spec : specs)
     {
-        QToolButton* button = new QToolButton;
-        button->setText(spec.id == QStringLiteral("device.productionDate.update")
-            ? QStringLiteral("Дата")
-            : (spec.id == QStringLiteral("device.ping")
-                ? QStringLiteral("Ping")
-                : (spec.target == QStringLiteral("bootloader") ? QStringLiteral("B") : QStringLiteral("A"))));
-        if (spec.id == QStringLiteral("device.serialNumber.update"))
-            button->setText(QStringLiteral("Number"));
-        button->setToolTip(spec.title.isEmpty() ? spec.id : spec.title);
-        button->setAutoRaise(false);
-        connect(button, &QToolButton::clicked, this, [this, row, id = spec.id]() {
-            runActionForRow(row, id);
-        });
-        layout->addWidget(button);
+        canPing = canPing || spec.id == QStringLiteral("device.ping");
+        supportsFlash = supportsFlash || spec.id == QStringLiteral("flash.application.write");
     }
-    layout->addStretch();
-    mTable->setCellWidget(row, ColActions, actions);
+    const bool hasFirmware = !artifactsForTarget({device}, QStringLiteral("application")).isEmpty();
+    const bool deviceBusy = isDeviceBusy(device);
+    const bool canFlash = supportsFlash && hasFirmware && !deviceBusy && !mWorkflowThread;
+
+    QPushButton* ping = new QPushButton;
+    ping->setObjectName(QStringLiteral("tablePing"));
+    ping->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    ping->setIconSize(QSize(18, 18));
+    ping->setAccessibleName(QStringLiteral("Ping"));
+    ping->setToolTip(deviceBusy
+        ? QStringLiteral("Дождитесь завершения текущей операции с устройством")
+        : QStringLiteral("Проверить связь с устройством"));
+    ping->setEnabled(canPing && !deviceBusy);
+    connect(ping, &QPushButton::clicked, this, [this, row]() {
+        runActionForRow(row, QStringLiteral("device.ping"));
+    });
+    QPushButton* flash = new QPushButton;
+    flash->setObjectName(QStringLiteral("tableFlash"));
+    flash->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
+    flash->setIconSize(QSize(18, 18));
+    flash->setAccessibleName(QStringLiteral("Прошить"));
+    flash->setAttribute(Qt::WA_AlwaysShowToolTips);
+    if (deviceBusy)
+        flash->setToolTip(QStringLiteral("Дождитесь завершения текущей операции с устройством"));
+    else if (mWorkflowThread)
+        flash->setToolTip(QStringLiteral("Дождитесь завершения текущей операции прошивки"));
+    else if (!supportsFlash)
+        flash->setToolTip(QStringLiteral("Прошивка недоступна для типа или текущего состояния устройства"));
+    else if (!hasFirmware)
+        flash->setToolTip(QStringLiteral("Нет подходящих прошивок для текущей версии устройства"));
+    else
+        flash->setToolTip(QStringLiteral("Выбрать доступную прошивку и записать её в устройство"));
+    flash->setEnabled(canFlash);
+    connect(flash, &QPushButton::clicked, this, [this, row]() {
+        runActionForRow(row, QStringLiteral("flash.application.write"));
+    });
+    mFirmwareTable->setCellWidget(row, FirmwareActions, tableButtonCell(ping, flash));
+    mFirmwareTable->resizeRowToContents(row);
 }
 
 QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedDevices() const
 {
     QVector<std::shared_ptr<DeviceBase>> selected;
-    for (int row = 0; row < mTable->rowCount() && row < mDevices.size(); ++row)
+    for (int row = 0; row < mFirmwareTable->rowCount() && row < mDevices.size(); ++row)
     {
-        const QTableWidgetItem* item = mTable->item(row, ColCheck);
+        const QTableWidgetItem* item = mFirmwareTable->item(row, FirmwareCheck);
         if (item && item->checkState() == Qt::Checked)
             selected.append(mDevices.at(row));
     }
@@ -727,9 +1276,15 @@ void MainWindow::showPingDialog(const std::shared_ptr<DeviceBase>& device)
     connect(start, &QPushButton::clicked, &dialog, [this, &dialog, device, pingSession, start, appendPingLine]() {
         if (pingSession->thread)
             return;
+        if (isDeviceBusy(device))
+        {
+            appendPingLine(QStringLiteral("Устройство занято другой операцией"));
+            return;
+        }
 
         start->setEnabled(false);
         appendPingLine(QStringLiteral("Опрос запущен"));
+        setDevicesBusy({device}, true);
         pingSession->thread = new QThread;
         pingSession->worker = new PingWorker(device, 500);
         pingSession->worker->moveToThread(pingSession->thread);
@@ -739,6 +1294,9 @@ void MainWindow::showPingDialog(const std::shared_ptr<DeviceBase>& device)
             appendPingLine(message);
         });
         connect(pingSession->worker, &PingWorker::transportLogMessage, this, &MainWindow::appendTransportLog);
+        connect(pingSession->worker, &PingWorker::finished, this, [this, device]() {
+            setDevicesBusy({device}, false);
+        });
         connect(pingSession->worker, &PingWorker::finished, pingSession->thread, &QThread::quit);
         connect(pingSession->worker, &PingWorker::finished, pingSession->worker, &PingWorker::deleteLater);
         connect(pingSession->thread, &QThread::finished, pingSession->thread, &QThread::deleteLater);
@@ -762,26 +1320,42 @@ void MainWindow::showPingDialog(const std::shared_ptr<DeviceBase>& device)
 
 void MainWindow::rebuildBulkMenu()
 {
-    mBulkMenu->clear();
+    if (!mBulkFlashButton)
+        return;
+
     const QVector<std::shared_ptr<DeviceBase>> selected = selectedDevices();
     const QVector<ActionSpec> actions = mServices->actions().commonActions(selected);
-    mBulkButton->setEnabled(!actions.isEmpty());
-
+    bool hasApplicationFlash = false;
     for (const ActionSpec& action : actions)
-    {
-        QAction* menuAction = mBulkMenu->addAction(action.title.isEmpty() ? action.id : action.title);
-        connect(menuAction, &QAction::triggered, this, [this, action, selected]() {
-            executeAction(action, selected);
-        });
-    }
+        hasApplicationFlash = hasApplicationFlash || action.id == QStringLiteral("flash.application.write");
+    bool hasBusyDevice = false;
+    for (const std::shared_ptr<DeviceBase>& device : selected)
+        hasBusyDevice = hasBusyDevice || isDeviceBusy(device);
+
+    const bool hasCommonFirmware = hasApplicationFlash
+        && !artifactsForTarget(selected, QStringLiteral("application")).isEmpty();
+    mBulkFlashButton->setText(selected.isEmpty()
+        ? QStringLiteral("Прошить выбранные")
+        : QStringLiteral("Прошить выбранные (%1)").arg(selected.size()));
+    if (selected.isEmpty())
+        mBulkFlashButton->setToolTip(QStringLiteral("Выберите устройства флажками в первом столбце"));
+    else if (hasBusyDevice)
+        mBulkFlashButton->setToolTip(QStringLiteral("Дождитесь завершения операции с выбранным устройством"));
+    else if (!hasApplicationFlash)
+        mBulkFlashButton->setToolTip(QStringLiteral("Прошивка недоступна для одного или нескольких выбранных устройств"));
+    else if (!hasCommonFirmware)
+        mBulkFlashButton->setToolTip(QStringLiteral("Для выбранных устройств нет общей подходящей прошивки"));
+    else
+        mBulkFlashButton->setToolTip(QStringLiteral("Выбрать общую прошивку для отмеченных устройств"));
+    mBulkFlashButton->setEnabled(hasCommonFirmware && !hasBusyDevice && !mWorkflowThread);
 }
 
 void MainWindow::setActionBusy(bool busy)
 {
-    if (mTable)
-        mTable->setEnabled(!busy);
-    if (mBulkButton)
-        mBulkButton->setEnabled(false);
+    if (mBulkFlashButton)
+        mBulkFlashButton->setEnabled(false);
+    for (int row = 0; row < mDevices.size(); ++row)
+        updateDeviceRow(row, mDevices.at(row));
     if (!busy)
         rebuildBulkMenu();
     if (mSearchButton)

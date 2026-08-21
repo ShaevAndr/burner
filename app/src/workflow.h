@@ -16,7 +16,7 @@ public:
     explicit WorkflowRunner(WorkflowRepository* workflows = nullptr, QObject* parent = nullptr);
     void setWorkflowRepository(WorkflowRepository* workflows);
 
-    void run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters = {});
+    bool run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters = {});
 
 signals:
     void logMessage(QString message);

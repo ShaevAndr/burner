@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "deviceTypes": [
     {
       "id": "boc.v12",
@@ -22,24 +22,236 @@
         "device.application.load"
       ],
       "flashWorkflows": {
-        "application": "flash.test",
+        "application": "firmware.transition",
         "bootloader": "flash.test"
       },
       "firmwareFiles": [
         {
-          "target": "application",
-          "version": "test-1.0.0",
-          "relativePath": "flash/boc-v12/application-test.bin",
-          "sha256": "3D3450432C1732B034F9A5DDBAD373DA920882CFBC8D931E316210DB567A20B6"
-        },
-        {
           "target": "bootloader",
+          "title": "Bootloader test image",
           "version": "test-1.0.0",
           "relativePath": "flash/boc-v12/bootloader-test.bin",
-          "sha256": "5EEC959959CAF8E77CF0278898656A9EB974800955789F8B69C7CA32F3FAB40E"
+          "sha256": "5EEC959959CAF8E77CF0278898656A9EB974800955789F8B69C7CA32F3FAB40E",
+          "default": true,
+          "flashNum": 1
         }
       ],
+      "firmwareGraph": {
+        "versions": [
+          {
+            "id": "test-1.0.0",
+            "title": "Application test image",
+            "version": "test-1.0.0",
+            "descriptionRegex": "\\(SW Jul 15 2026 14:30:56\\)$",
+            "artifact": {
+              "target": "application",
+              "relativePath": "flash/boc-v12/application-test.bin",
+              "sha256": "3D3450432C1732B034F9A5DDBAD373DA920882CFBC8D931E316210DB567A20B6",
+              "default": true,
+              "flashNum": 0
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "from": "test-1.0.0",
+            "to": "test-1.0.0",
+            "enabled": true,
+            "pipeline": [
+              {
+                "type": "loadBootloader",
+                "settleMs": 5000
+              },
+              {
+                "type": "flash"
+              },
+              {
+                "type": "verify"
+              },
+              {
+                "type": "restart"
+              },
+              {
+                "type": "waitForApplication",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 1000
+              }
+            ]
+          }
+        ]
+      },
       "deviceClass": "BocV12Device"
+    },
+    {
+      "id": "boc.v6",
+      "protocol": "unicorn-ascii",
+      "type": "0x0A02",
+      "version": "0x0001",
+      "bootloaderType": "0x1000",
+      "bootloaderVersion": "0x0000",
+      "name": "БОЦ-В-6",
+      "description": "Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 20 2026 16:",
+      "expectedDescription": "Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 20 2026 16:",
+      "expectedDescriptionPattern": "Блок обработки цифровой (БОЦ-В-6){boot} {year} {quarter} Зав.№{serial} (SW {sw}",
+      "capabilities": [
+        "identity.read",
+        "device.ping",
+        "flash.application.write"
+      ],
+      "flashWorkflows": {
+        "application": "firmware.transition"
+      },
+      "firmwareGraph": {
+        "versions": [
+          {
+            "id": "sw-2026-08-20_15:53",
+            "title": "БОЦ-В-6 2026-08-20 15:53",
+            "version": "2026-08-20 15:53",
+            "descriptionRegex": "\\(SW Aug 20 2026 16:$"
+          },
+          {
+            "id": "sw-2026-08-20-16-26-49",
+            "title": "БОЦ-В-6 ADC Vibr Digital",
+            "version": "2026-08-20 16:26:49",
+            "descriptionRegex": "\\(SW Aug 20 2026 16:$",
+            "detectFromDescription": false,
+            "artifact": {
+              "target": "application",
+              "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260820_1627.hex",
+              "sha256": "797EA8D66D9476D02F2760B400B85EDF1CCABC3E46C4ADCE2AB498E7D2B3032B",
+              "format": "intelHex",
+              "addressBase": "0x08040000",
+              "flashNum": 1
+            }
+          },
+          {
+            "id": "sw-2026-08-21-11-14-34",
+            "title": "БОЦ-В-6 ADC Vibr Digital",
+            "version": "2026-08-21 11:14:34",
+            "descriptionRegex": "\\(SW Aug 21 2026 11:$",
+            "artifact": {
+              "target": "application",
+              "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260821_1114.hex",
+              "sha256": "80AFF9B0934D6408563649F0F60C9C4C7EE8BA541DC0887D049363783B2BF33E",
+              "format": "intelHex",
+              "addressBase": "0x08040000",
+              "default": true,
+              "flashNum": 1
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "from": "sw-2026-08-20_15:53",
+            "to": "sw-2026-08-20-16-26-49",
+            "enabled": true,
+            "pipeline": [
+              {
+                "type": "loadBootloader",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 500,
+                "settleMs": 250
+              },
+              {
+                "type": "flash"
+              },
+              {
+                "type": "verify"
+              },
+              {
+                "type": "restart"
+              },
+              {
+                "type": "waitForApplication",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 1000
+              }
+            ]
+          },
+          {
+            "from": "sw-2026-08-20_15:53",
+            "to": "sw-2026-08-21-11-14-34",
+            "enabled": true,
+            "pipeline": [
+              {
+                "type": "loadBootloader",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 500,
+                "settleMs": 250
+              },
+              {
+                "type": "flash"
+              },
+              {
+                "type": "verify"
+              },
+              {
+                "type": "restart"
+              },
+              {
+                "type": "waitForApplication",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 1000
+              }
+            ]
+          },
+          {
+            "from": "sw-2026-08-20-16-26-49",
+            "to": "sw-2026-08-21-11-14-34",
+            "enabled": true,
+            "pipeline": [
+              {
+                "type": "loadBootloader",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 500,
+                "settleMs": 250
+              },
+              {
+                "type": "flash"
+              },
+              {
+                "type": "verify"
+              },
+              {
+                "type": "restart"
+              },
+              {
+                "type": "waitForApplication",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 1000
+              }
+            ]
+          },
+          {
+            "from": "sw-2026-08-21-11-14-34",
+            "to": "sw-2026-08-20-16-26-49",
+            "enabled": true,
+            "pipeline": [
+              {
+                "type": "loadBootloader",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 500,
+                "settleMs": 250
+              },
+              {
+                "type": "flash"
+              },
+              {
+                "type": "verify"
+              },
+              {
+                "type": "restart"
+              },
+              {
+                "type": "waitForApplication",
+                "timeoutMs": 15000,
+                "pollIntervalMs": 1000
+              }
+            ]
+          }
+        ]
+      },
+      "deviceClass": "DeviceBase"
     }
   ]
 }

@@ -5,6 +5,7 @@
 
 #include <QHash>
 #include <QString>
+#include <QVector>
 
 class CatalogService
 {
@@ -16,6 +17,7 @@ public:
 private:
     const CatalogEntry* entryForDevice(const DeviceIdentity& device) const;
     QHash<quint32, CatalogEntry> mEntriesByTypeVersion;
+    QVector<CatalogEntry> mEntries;
 };
 
 #endif // DEVICE_WORKBENCH_CATALOG_H

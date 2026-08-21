@@ -39,9 +39,16 @@ struct WorkflowFlashPlan
     QString workflowId;
     QString target;
     FirmwareArtifact artifact;
+    QString fileName;
+    QByteArray data;
+    bool verifyAfterWrite = true;
+    int flashNum = 0;
+    int offset = 0;
     int pageSize = 2048;
     int beginPage = 0;
     int endPage = 0;
+    int firstWrittenPage = 0;
+    QVector<QByteArray> expectedPages;
 };
 
 struct WorkflowContext
@@ -84,12 +91,16 @@ private:
     int completedProgressPercent() const;
     void reportProgressStage(const DeviceIdentity& identity, const QString& stage) const;
     void emitTransportLog(const DeviceIdentity& identity);
+    bool ensureDeviceUuid(DeviceBase& device);
+    bool disableApplicationLoading(DeviceBase& device);
     bool runOperationWithRetry(const DeviceIdentity& identity,
         const WorkflowStep& step,
         const DeviceOperation& operation,
         const QVariantMap& arguments);
+    bool isRuntimeStep(const QString& operation) const;
     bool executeRuntimeStep(DeviceBase& device, const WorkflowStep& step);
     bool executeDeviceStep(DeviceBase& device, const WorkflowStep& step);
+    bool verifyFlashPages(DeviceBase& device);
     QVariantMap resolveArguments(const WorkflowStep& step) const;
     QString formatMessage(const DeviceIdentity& identity, const QString& message, const QVariantMap& arguments) const;
 
