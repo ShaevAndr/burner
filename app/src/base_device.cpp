@@ -45,18 +45,26 @@ bool DeviceBase::disableLoadApplication(QString* error, QString* rawResponse) co
     return writeInt(0, 0, error, rawResponse);
 }
 
-bool DeviceBase::writeProductionDate(qint32, QString* error, QString*) const
+bool DeviceBase::writeProductionDate(qint32 timestamp, QString* error, QString* rawResponse) const
 {
-    if (error)
-        *error = QStringLiteral("Production date update is not supported for %1").arg(className());
-    return false;
+    if (mIdentity.productionDateRegister < 0)
+    {
+        if (error)
+            *error = QStringLiteral("Production date register is not configured for %1").arg(className());
+        return false;
+    }
+    return writeInt(quint16(mIdentity.productionDateRegister), timestamp, error, rawResponse);
 }
 
-bool DeviceBase::writeSerialNumber(qint32, QString* error, QString*) const
+bool DeviceBase::writeSerialNumber(qint32 serialNumber, QString* error, QString* rawResponse) const
 {
-    if (error)
-        *error = QStringLiteral("Serial number update is not supported for %1").arg(className());
-    return false;
+    if (mIdentity.serialNumberRegister < 0)
+    {
+        if (error)
+            *error = QStringLiteral("Serial number register is not configured for %1").arg(className());
+        return false;
+    }
+    return writeInt(quint16(mIdentity.serialNumberRegister), serialNumber, error, rawResponse);
 }
 
 bool DeviceBase::writeInt(quint16 index, qint32 value, QString* error, QString* rawResponse) const

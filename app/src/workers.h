@@ -43,7 +43,9 @@ signals:
     void logMessage(QString message);
     void transportLogMessage(QString message);
     void progressChanged(int percent);
-    void finished(bool successful);
+    void stageChanged(QString operation, QString stage);
+    void identityRefreshed(int deviceIndex, DeviceIdentity identity);
+    void finished(bool successful, QString stageOperation, QString stage);
 
 private:
     WorkflowRepository* mWorkflows = nullptr;

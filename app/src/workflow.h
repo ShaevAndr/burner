@@ -22,6 +22,8 @@ signals:
     void logMessage(QString message);
     void transportLogMessage(QString message);
     void progressChanged(int percent);
+    void stageChanged(QString operation, QString stage);
+    void failureStage(QString operation, QString stage);
 
 private:
     WorkflowRepository* mWorkflows = nullptr;

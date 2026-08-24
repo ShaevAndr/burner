@@ -2,6 +2,7 @@
 #define DEVICE_WORKBENCH_WORKFLOW_DEFINITION_H
 
 #include "base_device.h"
+#include "firmware_flash_strategy.h"
 #include "models.h"
 
 #include <QHash>
@@ -31,31 +32,20 @@ struct WorkflowCallbacks
     std::function<void(const QString&)> logMessage;
     std::function<void(const QString&)> transportLogMessage;
     std::function<void(int)> progressChanged;
+    std::function<void(const QString&, const QString&)> stageChanged;
     std::function<void()> processEvents;
-};
-
-struct WorkflowFlashPlan
-{
-    QString workflowId;
-    QString target;
-    FirmwareArtifact artifact;
-    QString fileName;
-    QByteArray data;
-    bool verifyAfterWrite = true;
-    int flashNum = 0;
-    int offset = 0;
-    int pageSize = 2048;
-    int beginPage = 0;
-    int endPage = 0;
-    int firstWrittenPage = 0;
-    QVector<QByteArray> expectedPages;
 };
 
 struct WorkflowContext
 {
     qint64 productionTimestamp = 0;
     int serialNumber = 0;
-    WorkflowFlashPlan flashPlan;
+    FirmwareFlashPlan flashPlan;
+    FirmwareVersionSpec targetFirmware;
+    QString targetFirmwareId;
+    DeviceIdentity reappearedIdentity;
+    bool transitionValidated = false;
+    bool flashWritten = false;
     QString transportError;
     QString transportRaw;
 };
@@ -65,6 +55,7 @@ class WorkflowRepository
 public:
     bool load(const QString& fileName, QString* error = nullptr);
     const WorkflowDefinition* definitionFor(const ActionSpec& action) const;
+    const WorkflowDefinition* definitionForId(const QString& workflowId) const;
     bool isEmpty() const { return mDefinitions.isEmpty(); }
 
 private:

@@ -11,6 +11,7 @@ SOURCES += \
     src/device.cpp \
     src/devices/boc_v12_device.cpp \
     src/discovery.cpp \
+    src/firmware_flash_strategy.cpp \
     src/main.cpp \
     src/main_window.cpp \
     src/service_container.cpp \
@@ -27,6 +28,7 @@ HEADERS += \
     src/device_transport.h \
     src/devices/boc_v12_device.h \
     src/discovery.h \
+    src/firmware_flash_strategy.h \
     src/main_window.h \
     src/models.h \
     src/service_container.h \

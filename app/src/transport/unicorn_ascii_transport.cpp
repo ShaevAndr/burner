@@ -110,14 +110,10 @@ bool sendDiscovery(QUdpSocket* socket, const QHostAddress& directAddress = QHost
 {
     bool sent = false;
     const QByteArray payload("FINE", 4);
-    // During a firmware transition the device IP is already known. Sending a
-    // unicast probe avoids relying on the OS multicast route, which may point
-    // at a VPN/tunnel instead of the adapter connected to the device.
+    // Try both the known address and multicast. Some devices only answer the
+    // multicast FINE request even when their current IP address is known.
     if (!directAddress.isNull() && directAddress.protocol() == QAbstractSocket::IPv4Protocol)
-    {
-        if (socket->writeDatagram(payload, directAddress, kDiscoveryPort) >= 0)
-            return true;
-    }
+        sent = socket->writeDatagram(payload, directAddress, kDiscoveryPort) >= 0;
 
     for (const QNetworkInterface& iface : QNetworkInterface::allInterfaces())
     {
@@ -785,6 +781,7 @@ public:
         int receivedDatagrams = 0;
         QString lastCandidate;
         QString lastRejection;
+        const bool identifyByUuid = !expected.uuid.trimmed().isEmpty();
         while (elapsed.elapsed() < effectiveTimeout)
         {
             if (elapsed.elapsed() >= nextSendAt)
@@ -806,7 +803,7 @@ public:
                 if (socket.readDatagram(datagram.data(), datagram.size(), &sender, &senderPort) < 0)
                     continue;
                 ++receivedDatagrams;
-                if (!expectedHost.isEmpty() && sender.toString() != expectedHost)
+                if (!identifyByUuid && !expectedAddress.isNull() && !sender.isEqual(expectedAddress))
                 {
                     lastRejection = QStringLiteral("sender %1 does not match %2").arg(sender.toString(), expectedHost);
                     continue;
@@ -821,6 +818,23 @@ public:
                 }
                 lastCandidate = QStringLiteral("%1 %2 '%3' serial '%4'")
                     .arg(found.typeHex(), found.versionHex(), found.description, found.serialNumber);
+
+                QString foundUuid;
+                QString uuidError;
+                QString uuidRaw;
+                if (!readUuid(found, &foundUuid, &uuidError, &uuidRaw))
+                {
+                    lastRejection = QStringLiteral("UUID read failed: %1").arg(uuidError);
+                    continue;
+                }
+                found.uuid = foundUuid;
+                if (identifyByUuid && found.uuid.compare(expected.uuid, Qt::CaseInsensitive) != 0)
+                {
+                    lastRejection = QStringLiteral("UUID %1 does not match expected %2")
+                        .arg(found.uuid, expected.uuid);
+                    continue;
+                }
+
                 if (!expected.serialNumber.isEmpty() && !found.serialNumber.isEmpty()
                     && expected.serialNumber != found.serialNumber)
                 {
@@ -837,22 +851,6 @@ public:
                 if (expected.state == QStringLiteral("bootloader") && !descriptionContainsBoot(found.description))
                 {
                     lastRejection = QStringLiteral("description has no (Boot) marker");
-                    continue;
-                }
-
-                QString foundUuid;
-                QString uuidError;
-                QString uuidRaw;
-                if (!readUuid(found, &foundUuid, &uuidError, &uuidRaw))
-                {
-                    lastRejection = QStringLiteral("UUID read failed: %1").arg(uuidError);
-                    continue;
-                }
-                found.uuid = foundUuid;
-                if (!expected.uuid.isEmpty() && found.uuid.compare(expected.uuid, Qt::CaseInsensitive) != 0)
-                {
-                    lastRejection = QStringLiteral("UUID %1 does not match expected %2")
-                        .arg(found.uuid, expected.uuid);
                     continue;
                 }
 

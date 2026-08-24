@@ -1,0 +1,9 @@
+********* Start testing of DeviceWorkbenchTest *********
+Config: Using QtTest library 5.12.12, Qt 5.12.12 (x86_64-little_endian-llp64 shared (dynamic) release build; by GCC 7.3.0)
+PASS   : DeviceWorkbenchTest::initTestCase()
+QINFO  : DeviceWorkbenchTest::networkChangeSerialNumberBocV6() BOC-V-6 before update: UUID=410FC241-3431-384D-1235-36353133584F serial=777 endpoint=192.168.1.193:2001
+QINFO  : DeviceWorkbenchTest::networkChangeSerialNumberBocV6() Read-only refresh confirmed serial=777 UUID=410FC241-3431-384D-1235-36353133584F
+PASS   : DeviceWorkbenchTest::networkChangeSerialNumberBocV6()
+PASS   : DeviceWorkbenchTest::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 71ms
+********* Finished testing of DeviceWorkbenchTest *********

@@ -1,0 +1,8 @@
+********* Start testing of DeviceWorkbenchTest *********
+Config: Using QtTest library 5.12.12, Qt 5.12.12 (x86_64-little_endian-llp64 shared (dynamic) release build; by GCC 7.3.0)
+PASS   : DeviceWorkbenchTest::initTestCase()
+FAIL!  : DeviceWorkbenchTest::networkChangeSerialNumberBocV6() 'currentSerialOk && currentSerial == expectedSerial' returned FALSE. (Serial precondition failed: expected 11, actual '777'; no write performed)
+tst_device_workbench.cpp(1376) : failure location
+PASS   : DeviceWorkbenchTest::cleanupTestCase()
+Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 46ms
+********* Finished testing of DeviceWorkbenchTest *********

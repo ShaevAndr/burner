@@ -3,6 +3,7 @@ debug/action_repository.o
 debug/base_device.o
 debug/catalog.o
 debug/device.o
+debug/firmware_flash_strategy.o
 debug/boc_v12_device.o
 debug/unicorn_ascii_transport.o
 debug/workflow.o

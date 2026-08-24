@@ -60,144 +60,15 @@ static QString sha256File(const QString& fileName, QString* error)
     return QString::fromLatin1(hash.result().toHex());
 }
 
-static QRegularExpression deviceDescriptionPatternToRegex(const QString& pattern)
+static bool deviceDescriptionContainsKeywords(const QString& description, const QStringList& keywords)
 {
-    QString regex = QRegularExpression::escape(pattern.trimmed());
-    regex.replace(QStringLiteral("\\{boot\\}"), QStringLiteral("(?: \\(Boot\\))?"));
-    regex.replace(QStringLiteral("\\{year\\}"), QStringLiteral("\\d{4}"));
-    regex.replace(QStringLiteral("\\{quarter\\}"), QStringLiteral("[IVX]+"));
-    regex.replace(QStringLiteral("\\{serial\\}"), QStringLiteral("\\d+"));
-    regex.replace(QStringLiteral("\\{sw\\}"), QStringLiteral(".+"));
-    return QRegularExpression(QStringLiteral("^%1$").arg(regex),
-        QRegularExpression::CaseInsensitiveOption);
-}
-
-struct IntelHexImage
-{
-    QByteArray data;
-    int ignoredBytes = 0;
-};
-
-static bool parseIntelHex(const QByteArray& fileData,
-    quint32 addressBase,
-    int maxImageSize,
-    IntelHexImage* image,
-    QString* error)
-{
-    if (!image || maxImageSize <= 0)
-    {
-        if (error)
-            *error = QStringLiteral("Invalid Intel HEX target range");
+    if (keywords.isEmpty())
         return false;
-    }
-
-    image->data.clear();
-    image->ignoredBytes = 0;
-    quint32 upperAddress = 0;
-    bool eofSeen = false;
-    const QList<QByteArray> lines = fileData.split('\n');
-    for (int lineIndex = 0; lineIndex < lines.size(); ++lineIndex)
+    for (const QString& keyword : keywords)
     {
-        const QByteArray line = lines.at(lineIndex).trimmed();
-        if (line.isEmpty())
-            continue;
-        if (!line.startsWith(':') || ((line.size() - 1) % 2) != 0)
-        {
-            if (error)
-                *error = QStringLiteral("Bad Intel HEX record at line %1").arg(lineIndex + 1);
+        if (keyword.trimmed().isEmpty()
+            || !description.contains(keyword.trimmed(), Qt::CaseInsensitive))
             return false;
-        }
-
-        const QByteArray encoded = line.mid(1);
-        for (char character : encoded)
-        {
-            const bool isHex = (character >= '0' && character <= '9')
-                || (character >= 'a' && character <= 'f')
-                || (character >= 'A' && character <= 'F');
-            if (!isHex)
-            {
-                if (error)
-                    *error = QStringLiteral("Bad Intel HEX character at line %1").arg(lineIndex + 1);
-                return false;
-            }
-        }
-
-        const QByteArray record = QByteArray::fromHex(encoded);
-        if (record.size() < 5 || record.size() != quint8(record.at(0)) + 5)
-        {
-            if (error)
-                *error = QStringLiteral("Bad Intel HEX length at line %1").arg(lineIndex + 1);
-            return false;
-        }
-
-        quint8 checksum = 0;
-        for (char byte : record)
-            checksum = quint8(checksum + quint8(byte));
-        if (checksum != 0)
-        {
-            if (error)
-                *error = QStringLiteral("Bad Intel HEX checksum at line %1").arg(lineIndex + 1);
-            return false;
-        }
-
-        const int byteCount = quint8(record.at(0));
-        const quint16 offset = quint16((quint16(quint8(record.at(1))) << 8) | quint8(record.at(2)));
-        const quint8 type = quint8(record.at(3));
-        if (type == 0x00)
-        {
-            const quint64 absoluteAddress = quint64(upperAddress) + offset;
-            const quint64 rangeBegin = addressBase;
-            const quint64 rangeEnd = rangeBegin + quint64(maxImageSize);
-            const quint64 recordEnd = absoluteAddress + quint64(byteCount);
-            if (absoluteAddress >= rangeBegin && recordEnd <= rangeEnd)
-            {
-                const int relativeAddress = int(absoluteAddress - rangeBegin);
-                const int requiredSize = relativeAddress + byteCount;
-                if (requiredSize > image->data.size())
-                    image->data.append(QByteArray(requiredSize - image->data.size(), char(0xFF)));
-                std::copy(record.constBegin() + 4,
-                    record.constBegin() + 4 + byteCount,
-                    image->data.begin() + relativeAddress);
-            }
-            else if (recordEnd <= rangeBegin || absoluteAddress >= rangeEnd)
-            {
-                image->ignoredBytes += byteCount;
-            }
-            else
-            {
-                if (error)
-                    *error = QStringLiteral("Intel HEX record crosses flash boundary at line %1")
-                        .arg(lineIndex + 1);
-                return false;
-            }
-        }
-        else if (type == 0x01)
-        {
-            eofSeen = true;
-            break;
-        }
-        else if (type == 0x04 && byteCount == 2)
-        {
-            upperAddress = quint32((quint32(quint8(record.at(4))) << 8)
-                | quint8(record.at(5))) << 16;
-        }
-        else if (type != 0x05)
-        {
-            if (error)
-                *error = QStringLiteral("Unsupported Intel HEX record type %1 at line %2")
-                    .arg(type)
-                    .arg(lineIndex + 1);
-            return false;
-        }
-    }
-
-    if (!eofSeen || image->data.isEmpty())
-    {
-        if (error)
-            *error = !eofSeen
-                ? QStringLiteral("Intel HEX end-of-file record is missing")
-                : QStringLiteral("Intel HEX has no data in the configured flash range");
-        return false;
     }
     return true;
 }
@@ -210,12 +81,13 @@ static void sleepWithEvents(int ms)
     QThread::msleep(static_cast<unsigned long>(ms));
 }
 
-static WorkflowFlashPlan buildFlashPlan(const DeviceIdentity& identity, const ActionSpec& action)
+static FirmwareFlashPlan buildFlashPlan(const DeviceIdentity& identity, const ActionSpec& action)
 {
-    WorkflowFlashPlan plan;
-    plan.workflowId = identity.flashWorkflows.value(action.target, action.workflow);
+    FirmwareFlashPlan plan;
+    plan.workflowId = action.workflow;
     plan.target = action.target;
     plan.artifact = identity.firmwareForTarget(action.target);
+    plan.strategyId = QStringLiteral("page-flash");
     plan.flashNum = plan.artifact.flashNum;
     plan.offset = plan.artifact.offset;
     if (plan.artifact.pageSize > 0)
@@ -244,26 +116,9 @@ static FirmwareArtifact artifactFromVariant(const QVariantMap& map, const Firmwa
     artifact.offset = map.value(QStringLiteral("offset"), artifact.offset).toInt();
     artifact.pageSize = map.value(QStringLiteral("pageSize"), artifact.pageSize).toInt();
     artifact.pagesCount = map.value(QStringLiteral("pagesCount"), artifact.pagesCount).toInt();
+    artifact.flashStrategy = map.value(QStringLiteral("flashStrategy"), artifact.flashStrategy).toString();
+    artifact.flashParameters = map.value(QStringLiteral("flashParameters"), artifact.flashParameters).toMap();
     return artifact;
-}
-
-static QVariantMap artifactToVariant(const FirmwareArtifact& artifact)
-{
-    QVariantMap map;
-    map.insert(QStringLiteral("firmwareId"), artifact.firmwareId);
-    map.insert(QStringLiteral("target"), artifact.target);
-    map.insert(QStringLiteral("title"), artifact.title);
-    map.insert(QStringLiteral("version"), artifact.version);
-    map.insert(QStringLiteral("relativePath"), artifact.relativePath);
-    map.insert(QStringLiteral("sha256"), artifact.sha256);
-    map.insert(QStringLiteral("format"), artifact.format);
-    map.insert(QStringLiteral("addressBase"), artifact.addressBase);
-    map.insert(QStringLiteral("default"), artifact.isDefault);
-    map.insert(QStringLiteral("flashNum"), artifact.flashNum);
-    map.insert(QStringLiteral("offset"), artifact.offset);
-    map.insert(QStringLiteral("pageSize"), artifact.pageSize);
-    map.insert(QStringLiteral("pagesCount"), artifact.pagesCount);
-    return map;
 }
 
 static QVariantMap jsonObjectToVariantMap(const QJsonObject& object)
@@ -360,6 +215,12 @@ const WorkflowDefinition* WorkflowRepository::definitionFor(const ActionSpec& ac
     return nullptr;
 }
 
+const WorkflowDefinition* WorkflowRepository::definitionForId(const QString& workflowId) const
+{
+    const auto definition = mDefinitions.constFind(workflowId);
+    return definition == mDefinitions.constEnd() ? nullptr : &definition.value();
+}
+
 WorkflowExecution::WorkflowExecution(const WorkflowDefinition& definition,
     const ActionSpec& action,
     QVariantMap parameters,
@@ -384,6 +245,9 @@ bool WorkflowExecution::next(DeviceBase& device)
 
     const WorkflowStep step = mDefinition.steps.at(mNextStep);
     ++mNextStep;
+
+    if (mCallbacks.stageChanged)
+        mCallbacks.stageChanged(step.op, step.label.isEmpty() ? step.op : step.label);
 
     const DeviceIdentity& identity = device.identity();
     if (!step.skipIfState.isEmpty() && identity.state == step.skipIfState)
@@ -443,6 +307,8 @@ void WorkflowExecution::reportProgressStage(const DeviceIdentity& identity, cons
 {
     if (!stage.isEmpty())
     {
+        if (mCallbacks.stageChanged)
+            mCallbacks.stageChanged(QString(), stage);
         log(QStringLiteral("[%1] progress %2% - %3")
             .arg(identity.typeHex())
             .arg(completedProgressPercent())
@@ -545,11 +411,19 @@ bool WorkflowExecution::isRuntimeStep(const QString& operation) const
         QStringLiteral("context.serialNumber"),
         QStringLiteral("sleep"),
         QStringLiteral("device.connect"),
-        QStringLiteral("firmware.executeTransition"),
+        QStringLiteral("device.ensureUuid"),
+        QStringLiteral("firmware.validateTransition"),
+        QStringLiteral("device.enterBootloader"),
+        QStringLiteral("device.disableApplicationLoad"),
+        QStringLiteral("firmware.validateArtifact"),
+        QStringLiteral("firmware.flash"),
+        QStringLiteral("firmware.verify"),
+        QStringLiteral("device.waitForApplication"),
+        QStringLiteral("firmware.verifyInstalledVersion"),
+        QStringLiteral("firmware.complete"),
         QStringLiteral("flash.prepare"),
         QStringLiteral("flash.validateArtifact"),
         QStringLiteral("flash.preflight"),
-        QStringLiteral("flash.simulateWrite"),
         QStringLiteral("flash.complete"),
         QStringLiteral("workflow.finish"),
         QStringLiteral("log")
@@ -608,12 +482,12 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         return true;
     }
 
-    if (step.op == QStringLiteral("firmware.executeTransition"))
-    {
-        if (!ensureDeviceUuid(device))
-            return false;
+    if (step.op == QStringLiteral("device.ensureUuid"))
+        return ensureDeviceUuid(device);
 
-        const QString targetFirmwareId = mParameters.value(QStringLiteral("targetFirmwareId")).toString();
+    if (step.op == QStringLiteral("firmware.validateTransition"))
+    {
+        mContext.targetFirmwareId = mParameters.value(QStringLiteral("targetFirmwareId")).toString();
         if (identity.currentFirmwareId.isEmpty())
         {
             log(QStringLiteral("[%1] firmware transition denied: %2")
@@ -623,254 +497,268 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
             return false;
         }
 
-        const FirmwareTransitionSpec* transitionSpec = identity.transitionTo(targetFirmwareId);
-        const FirmwareVersionSpec* targetFirmwareSpec = identity.firmwareVersionById(targetFirmwareId);
-        if (!transitionSpec || !transitionSpec->enabled || !targetFirmwareSpec)
+        const FirmwareTransitionSpec* transition = identity.transitionTo(mContext.targetFirmwareId);
+        const FirmwareVersionSpec* target = identity.firmwareVersionById(mContext.targetFirmwareId);
+        if (!transition || !transition->enabled || !target)
         {
-            const QString reason = transitionSpec && !transitionSpec->reason.isEmpty()
-                ? transitionSpec->reason
+            const QString reason = transition && !transition->reason.isEmpty()
+                ? transition->reason
                 : QStringLiteral("transition is not configured or disabled");
             log(QStringLiteral("[%1] firmware transition %2 -> %3 denied: %4")
-                .arg(identity.typeHex(), identity.currentFirmwareId, targetFirmwareId, reason));
+                .arg(identity.typeHex(), identity.currentFirmwareId, mContext.targetFirmwareId, reason));
+            return false;
+        }
+        if (target->installation.strategy.isEmpty())
+        {
+            log(QStringLiteral("[%1] firmware %2 has no flash strategy")
+                .arg(identity.typeHex(), target->id));
+            return false;
+        }
+        if (!FirmwareFlashStrategyRegistry::find(target->installation.strategy))
+        {
+            log(QStringLiteral("[%1] firmware %2 uses unknown flash strategy '%3'")
+                .arg(identity.typeHex(), target->id, target->installation.strategy));
             return false;
         }
 
-        const FirmwareTransitionSpec transition = *transitionSpec;
-        const FirmwareVersionSpec targetFirmware = *targetFirmwareSpec;
+        mContext.targetFirmware = *target;
+        mContext.transitionValidated = true;
+        mContext.flashPlan = buildFlashPlan(identity, mAction);
+        mContext.flashPlan.workflowId = target->installation.workflow;
+        mContext.flashPlan.strategyId = target->installation.strategy;
+        mContext.flashPlan.strategyParameters = target->installation.parameters;
+        mContext.flashPlan.artifact = target->artifact;
+        mContext.flashPlan.target = target->artifact.target;
+        mContext.flashPlan.flashNum = target->artifact.flashNum;
+        mContext.flashPlan.offset = target->artifact.offset;
+        mContext.flashPlan.verifyAfterWrite = false;
+        if (target->artifact.pageSize > 0)
+            mContext.flashPlan.pageSize = target->artifact.pageSize;
+        if (target->artifact.pagesCount > 0)
+            mContext.flashPlan.endPage = target->artifact.pagesCount - 1;
 
-        log(QStringLiteral("[%1] firmware transition %2 -> %3, %4 pipeline step(s)")
-            .arg(identity.typeHex(), transition.from, transition.to)
-            .arg(transition.pipeline.size()));
-        mParameters.insert(QStringLiteral("artifact"), artifactToVariant(targetFirmware.artifact));
-        mParameters.insert(QStringLiteral("verifyAfterWrite"), false);
-        mParameters.insert(QStringLiteral("bootloaderPrepared"), false);
-
-        bool flashed = false;
-        for (int pipelineIndex = 0; pipelineIndex < transition.pipeline.size(); ++pipelineIndex)
-        {
-            const FirmwarePipelineStep& pipelineStep = transition.pipeline.at(pipelineIndex);
-            log(QStringLiteral("[%1] pipeline %2/%3: %4")
-                .arg(identity.typeHex())
-                .arg(pipelineIndex + 1)
-                .arg(transition.pipeline.size())
-                .arg(pipelineStep.type));
-
-            if (!pipelineStep.skipIfState.isEmpty() && identity.state == pipelineStep.skipIfState)
-            {
-                log(QStringLiteral("[%1] pipeline step %2 skipped for state %3")
-                    .arg(identity.typeHex(), pipelineStep.type, identity.state));
-                continue;
-            }
-
-            const bool loadBootloaderStep = pipelineStep.type == QStringLiteral("loadBootloader");
-            if (loadBootloaderStep && identity.state == QStringLiteral("bootloader"))
-            {
-                log(QStringLiteral("[%1] device is already in bootloader mode").arg(identity.typeHex()));
-                if (!disableApplicationLoading(device))
-                    return false;
-                mParameters.insert(QStringLiteral("bootloaderPrepared"), true);
-                continue;
-            }
-
-            if (pipelineStep.type == QStringLiteral("reset") || loadBootloaderStep)
-            {
-                if (!ensureDeviceUuid(device))
-                    return false;
-
-                QString error;
-                QString raw;
-                if (!device.reset(&error, &raw))
-                {
-                    if (!raw.isEmpty())
-                        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                    log(QStringLiteral("[%1] reset failed: %2").arg(identity.typeHex(), error));
-                    return false;
-                }
-                if (!raw.isEmpty())
-                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-
-                if (identity.bootloaderType == 0)
-                {
-                    log(QStringLiteral("[%1] bootloader identity is not configured").arg(identity.typeHex()));
-                    return false;
-                }
-
-                DeviceIdentity expectedBootloader = identity;
-                // Do not filter discovery by the configured bootloader identity. Some
-                // bootloaders expose a different or incomplete type/version and must
-                // be recognized from the device description instead.
-                expectedBootloader.type = 0;
-                expectedBootloader.version = 0;
-                expectedBootloader.state = QStringLiteral("bootloader");
-
-                DeviceIdentity found;
-                const int timeoutMs = pipelineStep.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
-                const int pollIntervalMs = pipelineStep.arguments.value(QStringLiteral("pollIntervalMs"), 500).toInt();
-                raw.clear();
-                error.clear();
-                log(QStringLiteral("[%1] waiting for bootloader (expected %2 %3, description fallback enabled)")
-                    .arg(identity.typeHex(),
-                        QStringLiteral("0X%1").arg(identity.bootloaderType, 4, 16, QLatin1Char('0')).toUpper(),
-                        QStringLiteral("0X%1").arg(identity.bootloaderVersion, 4, 16, QLatin1Char('0')).toUpper()));
-                if (!device.waitForDeviceIdentity(expectedBootloader, timeoutMs, pollIntervalMs, &found, &error, &raw))
-                {
-                    if (!raw.isEmpty())
-                        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                    log(QStringLiteral("[%1] waitForBootloader failed: %2").arg(identity.typeHex(), error));
-                    return false;
-                }
-                if (!raw.isEmpty())
-                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-
-                static const QRegularExpression bootMarker(
-                    QStringLiteral("\\(\\s*Boot\\s*\\)"),
-                    QRegularExpression::CaseInsensitiveOption);
-                const bool configuredIdentityMatches = found.type == identity.bootloaderType
-                    && found.version == identity.bootloaderVersion;
-                const QRegularExpression descriptionPattern =
-                    deviceDescriptionPatternToRegex(identity.expectedDescriptionPattern);
-                const bool descriptionMatches = !identity.expectedDescriptionPattern.trimmed().isEmpty()
-                    && descriptionPattern.isValid()
-                    && descriptionPattern.match(found.description.trimmed()).hasMatch();
-                const bool hasBootMarker = bootMarker.match(found.description).hasMatch();
-                const bool uuidMatches = !identity.uuid.isEmpty()
-                    && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
-                if (!uuidMatches || !hasBootMarker || (!configuredIdentityMatches && !descriptionMatches))
-                {
-                    log(QStringLiteral("[%1] unexpected bootloader identity: %2 %3 UUID=%4 '%5'")
-                        .arg(identity.typeHex(), found.typeHex(), found.versionHex(), found.uuid, found.description));
-                    return false;
-                }
-                if (!configuredIdentityMatches)
-                {
-                    log(QStringLiteral("[%1] bootloader identified by description: %2 %3 '%4'")
-                        .arg(identity.typeHex(), found.typeHex(), found.versionHex(), found.description));
-                }
-
-                DeviceIdentity updated = identity;
-                updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
-                updated.endpoint = found.endpoint;
-                updated.modbusAddress = found.modbusAddress;
-                updated.type = found.type;
-                updated.version = found.version;
-                updated.description = found.description;
-                updated.serialNumber = found.serialNumber;
-                updated.state = QStringLiteral("bootloader");
-                device.updateIdentity(updated);
-                log(QStringLiteral("[%1] bootloader connected at %2")
-                    .arg(found.typeHex(), found.endpoint));
-                if (loadBootloaderStep)
-                {
-                    if (!disableApplicationLoading(device))
-                        return false;
-                    mParameters.insert(QStringLiteral("bootloaderPrepared"), true);
-                }
-                sleepWithEvents(pipelineStep.arguments.value(QStringLiteral("settleMs"), 250).toInt());
-                continue;
-            }
-
-            if (pipelineStep.type == QStringLiteral("flash"))
-            {
-                WorkflowStep flashStep;
-                flashStep.op = QStringLiteral("flash.prepare");
-                if (!executeRuntimeStep(device, flashStep))
-                    return false;
-                flashStep.op = QStringLiteral("flash.validateArtifact");
-                if (!executeRuntimeStep(device, flashStep))
-                    return false;
-                flashStep.op = QStringLiteral("flash.preflight");
-                if (!executeRuntimeStep(device, flashStep))
-                    return false;
-                flashStep.op = QStringLiteral("flash.simulateWrite");
-                if (!executeRuntimeStep(device, flashStep))
-                    return false;
-                flashed = true;
-                continue;
-            }
-
-            if (pipelineStep.type == QStringLiteral("verify"))
-            {
-                if (!flashed || !verifyFlashPages(device))
-                    return false;
-                continue;
-            }
-
-            if (pipelineStep.type == QStringLiteral("restart"))
-            {
-                QString error;
-                QString raw;
-                if (!device.loadApplicationNoReply(&error, &raw))
-                {
-                    if (!raw.isEmpty())
-                        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                    log(QStringLiteral("[%1] application restart failed: %2").arg(identity.typeHex(), error));
-                    return false;
-                }
-                if (!raw.isEmpty())
-                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                continue;
-            }
-
-            if (pipelineStep.type == QStringLiteral("waitForApplication"))
-            {
-                DeviceIdentity found;
-                DeviceIdentity expectedApplication = identity;
-                expectedApplication.type = identity.applicationType;
-                expectedApplication.version = identity.applicationVersion;
-                expectedApplication.state = QStringLiteral("application");
-                QString error;
-                QString raw;
-                const int timeoutMs = pipelineStep.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
-                const int pollIntervalMs = pipelineStep.arguments.value(QStringLiteral("pollIntervalMs"), 1000).toInt();
-                if (!device.waitForDeviceIdentity(expectedApplication, timeoutMs, pollIntervalMs, &found, &error, &raw))
-                {
-                    if (!raw.isEmpty())
-                        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                    log(QStringLiteral("[%1] waitForApplication failed: %2").arg(identity.typeHex(), error));
-                    return false;
-                }
-                if (!raw.isEmpty())
-                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-
-                const QRegularExpression targetMatcher(targetFirmware.descriptionRegex);
-                const bool identityMatches = found.type == identity.applicationType
-                    && found.version == identity.applicationVersion;
-                const bool uuidMatches = !identity.uuid.isEmpty()
-                    && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
-                const bool descriptionMatches = targetMatcher.isValid()
-                    && targetMatcher.match(found.description.trimmed()).hasMatch();
-                if (!uuidMatches || !identityMatches || !descriptionMatches)
-                {
-                    log(QStringLiteral("[%1] application appeared with unexpected identity, UUID or firmware: %2 %3 UUID=%4 '%5'")
-                        .arg(identity.typeHex(), found.typeHex(), found.versionHex(), found.uuid, found.description));
-                    return false;
-                }
-
-                DeviceIdentity updated = identity;
-                updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
-                updated.endpoint = found.endpoint;
-                updated.modbusAddress = found.modbusAddress;
-                updated.type = found.type;
-                updated.version = found.version;
-                updated.description = found.description;
-                updated.serialNumber = found.serialNumber;
-                updated.state = QStringLiteral("application");
-                updated.currentFirmwareId = targetFirmwareId;
-                updated.firmwareDetectionError.clear();
-                updated.status = QStringLiteral("прошивка %1").arg(targetFirmwareId);
-                device.updateIdentity(updated);
-                log(QStringLiteral("[%1] application %2 is running")
-                    .arg(found.typeHex(), targetFirmwareId));
-                continue;
-            }
-        }
+        log(QStringLiteral("[%1] firmware transition %2 -> %3 via %4, strategy=%5")
+            .arg(identity.typeHex(), identity.currentFirmwareId, target->id,
+                target->installation.workflow, target->installation.strategy));
+        reportProgressStage(identity, QStringLiteral("queued"));
         return true;
     }
+
+    if (step.op == QStringLiteral("device.enterBootloader"))
+    {
+        if (!mContext.transitionValidated)
+        {
+            log(QStringLiteral("[%1] enter bootloader requested before transition validation")
+                .arg(identity.typeHex()));
+            return false;
+        }
+        if (identity.state == QStringLiteral("bootloader"))
+        {
+            log(QStringLiteral("[%1] device is already in bootloader mode").arg(identity.typeHex()));
+            return true;
+        }
+        if (!ensureDeviceUuid(device))
+            return false;
+
+        QString error;
+        QString raw;
+        if (!device.reset(&error, &raw))
+        {
+            if (!raw.isEmpty())
+                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+            log(QStringLiteral("[%1] reset failed: %2").arg(identity.typeHex(), error));
+            return false;
+        }
+        if (!raw.isEmpty())
+            transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+        if (identity.bootloaderType == 0)
+        {
+            log(QStringLiteral("[%1] bootloader identity is not configured").arg(identity.typeHex()));
+            return false;
+        }
+
+        DeviceIdentity expected = identity;
+        expected.type = 0;
+        expected.version = 0;
+        expected.state = QStringLiteral("bootloader");
+        DeviceIdentity found;
+        const int timeoutMs = step.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
+        const int pollIntervalMs = step.arguments.value(QStringLiteral("pollIntervalMs"), 500).toInt();
+        log(QStringLiteral("[%1] waiting for bootloader (expected %2 %3, description fallback enabled)")
+            .arg(identity.typeHex(),
+                QStringLiteral("0X%1").arg(identity.bootloaderType, 4, 16, QLatin1Char('0')).toUpper(),
+                QStringLiteral("0X%1").arg(identity.bootloaderVersion, 4, 16, QLatin1Char('0')).toUpper()));
+        if (!device.waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs, &found, &error, &raw))
+        {
+            if (!raw.isEmpty())
+                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+            log(QStringLiteral("[%1] waitForBootloader failed: %2").arg(identity.typeHex(), error));
+            return false;
+        }
+        if (!raw.isEmpty())
+            transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+
+        static const QRegularExpression bootMarker(
+            QStringLiteral("\\(\\s*Boot\\s*\\)"),
+            QRegularExpression::CaseInsensitiveOption);
+        const bool configuredIdentityMatches = found.type == identity.bootloaderType
+            && found.version == identity.bootloaderVersion;
+        const bool descriptionMatches = deviceDescriptionContainsKeywords(found.description, identity.descriptionKeywords);
+        const bool hasBootMarker = bootMarker.match(found.description).hasMatch();
+        const bool uuidMatches = !identity.uuid.isEmpty()
+            && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
+        if (!uuidMatches || !hasBootMarker || (!configuredIdentityMatches && !descriptionMatches))
+        {
+            log(QStringLiteral("[%1] unexpected bootloader identity: %2 %3 UUID=%4 '%5'")
+                .arg(identity.typeHex(), found.typeHex(), found.versionHex(), found.uuid, found.description));
+            return false;
+        }
+        if (!configuredIdentityMatches)
+        {
+            log(QStringLiteral("[%1] bootloader identified by description: %2 %3 '%4'")
+                .arg(identity.typeHex(), found.typeHex(), found.versionHex(), found.description));
+        }
+
+        DeviceIdentity updated = identity;
+        updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
+        updated.endpoint = found.endpoint;
+        updated.modbusAddress = found.modbusAddress;
+        updated.type = found.type;
+        updated.version = found.version;
+        updated.description = found.description;
+        updated.serialNumber = found.serialNumber;
+        updated.state = QStringLiteral("bootloader");
+        device.updateIdentity(updated);
+        log(QStringLiteral("[%1] bootloader connected at %2").arg(found.typeHex(), found.endpoint));
+        sleepWithEvents(step.arguments.value(QStringLiteral("settleMs"), 250).toInt());
+        return true;
+    }
+
+    if (step.op == QStringLiteral("device.disableApplicationLoad"))
+        return disableApplicationLoading(device);
+
+    if (step.op == QStringLiteral("firmware.validateArtifact"))
+    {
+        if (!mContext.transitionValidated)
+        {
+            log(QStringLiteral("[%1] artifact validation requested before transition validation")
+                .arg(identity.typeHex()));
+            return false;
+        }
+        WorkflowStep validationStep;
+        validationStep.op = QStringLiteral("flash.validateArtifact");
+        return executeRuntimeStep(device, validationStep);
+    }
+
+    if (step.op == QStringLiteral("firmware.flash"))
+    {
+        if (mContext.flashPlan.data.isEmpty())
+        {
+            log(QStringLiteral("[%1] flash requested before artifact validation").arg(identity.typeHex()));
+            return false;
+        }
+        const FirmwareFlashStrategy* strategy = FirmwareFlashStrategyRegistry::find(mContext.flashPlan.strategyId);
+        if (!strategy)
+        {
+            log(QStringLiteral("[%1] unknown flash strategy '%2'")
+                .arg(identity.typeHex(), mContext.flashPlan.strategyId));
+            return false;
+        }
+        const FirmwareFlashCallbacks callbacks = {
+            [this](const QString& message) { log(message); },
+            [this](const QString& message) { transportLog(message); },
+            [this](int value) { progress(value); },
+            [this]() { processEvents(); }
+        };
+        mContext.flashWritten = strategy->flash(device, mContext.flashPlan, callbacks);
+        return mContext.flashWritten;
+    }
+
+    if (step.op == QStringLiteral("firmware.verify"))
+    {
+        if (!mContext.flashWritten)
+        {
+            log(QStringLiteral("[%1] firmware verify requested before flash")
+                .arg(identity.typeHex()));
+            return false;
+        }
+        if (mContext.flashPlan.strategyId == QStringLiteral("test-no-write"))
+            return true;
+        return verifyFlashPages(device);
+    }
+
+    if (step.op == QStringLiteral("device.waitForApplication"))
+    {
+        DeviceIdentity expected = identity;
+        expected.type = identity.applicationType;
+        expected.version = identity.applicationVersion;
+        expected.state = QStringLiteral("application");
+        QString error;
+        QString raw;
+        const int timeoutMs = step.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
+        const int pollIntervalMs = step.arguments.value(QStringLiteral("pollIntervalMs"), 1000).toInt();
+        if (!device.waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs,
+                &mContext.reappearedIdentity, &error, &raw))
+        {
+            if (!raw.isEmpty())
+                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+            log(QStringLiteral("[%1] waitForApplication failed: %2").arg(identity.typeHex(), error));
+            return false;
+        }
+        if (!raw.isEmpty())
+            transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+        return true;
+    }
+
+    if (step.op == QStringLiteral("firmware.verifyInstalledVersion"))
+    {
+        const DeviceIdentity& found = mContext.reappearedIdentity;
+        const QRegularExpression targetMatcher(mContext.targetFirmware.descriptionRegex);
+        const bool identityMatches = found.type == identity.applicationType
+            && found.version == identity.applicationVersion;
+        const bool uuidMatches = !identity.uuid.isEmpty()
+            && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
+        const bool descriptionMatches = targetMatcher.isValid()
+            && targetMatcher.match(found.description.trimmed()).hasMatch();
+        if (!uuidMatches || !identityMatches || !descriptionMatches)
+        {
+            log(QStringLiteral("[%1] application appeared with unexpected identity, UUID or firmware: %2 %3 UUID=%4 '%5'")
+                .arg(identity.typeHex(), found.typeHex(), found.versionHex(), found.uuid, found.description));
+            return false;
+        }
+
+        DeviceIdentity updated = identity;
+        updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
+        updated.endpoint = found.endpoint;
+        updated.modbusAddress = found.modbusAddress;
+        updated.type = found.type;
+        updated.version = found.version;
+        updated.description = found.description;
+        updated.serialNumber = found.serialNumber;
+        updated.state = QStringLiteral("application");
+        updated.currentFirmwareId = mContext.targetFirmwareId;
+        updated.firmwareDetectionError.clear();
+        updated.status = QStringLiteral("прошивка %1").arg(mContext.targetFirmwareId);
+        device.updateIdentity(updated);
+        log(QStringLiteral("[%1] application %2 is running")
+            .arg(found.typeHex(), mContext.targetFirmwareId));
+        return true;
+    }
+
+    if (step.op == QStringLiteral("firmware.complete"))
+    {
+        reportProgressStage(identity, QStringLiteral("done"));
+        return true;
+    }
+
 
     if (step.op == QStringLiteral("flash.prepare"))
     {
         mContext.flashPlan = buildFlashPlan(identity, mAction);
         mContext.flashPlan.artifact = artifactFromVariant(mParameters.value(QStringLiteral("artifact")).toMap(), mContext.flashPlan.artifact);
+        if (!mContext.flashPlan.artifact.flashStrategy.isEmpty())
+            mContext.flashPlan.strategyId = mContext.flashPlan.artifact.flashStrategy;
+        mContext.flashPlan.strategyParameters = mContext.flashPlan.artifact.flashParameters;
         mContext.flashPlan.flashNum = mContext.flashPlan.artifact.flashNum;
         mContext.flashPlan.offset = mContext.flashPlan.artifact.offset;
         mContext.flashPlan.verifyAfterWrite = mParameters.value(QStringLiteral("verifyAfterWrite"), true).toBool();
@@ -965,156 +853,6 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         {
             reportProgressStage(identity, flashStep);
             log(QStringLiteral("[%1] %2").arg(identity.typeHex(), flashStep));
-        }
-        return true;
-    }
-
-    if (step.op == QStringLiteral("flash.simulateWrite"))
-    {
-        if (mContext.flashPlan.workflowId == QStringLiteral("flash.test"))
-        {
-            reportProgressStage(identity, QStringLiteral("simulating write"));
-            log(QStringLiteral("[%1] writeFlash is intentionally not sent to hardware in MVP")
-                .arg(identity.typeHex()));
-            reportProgressStage(identity, QStringLiteral("verifying"));
-        }
-        else
-        {
-            QVector<FlashMemoryParams> params;
-            QString error;
-            QString raw;
-            bool paramsLoaded = false;
-            const int paramsAttempts = 4;
-            for (int attempt = 1; attempt <= paramsAttempts; ++attempt)
-            {
-                error.clear();
-                raw.clear();
-                if (device.flashGetParams(&params, &error, &raw))
-                {
-                    paramsLoaded = true;
-                    break;
-                }
-                if (!raw.isEmpty())
-                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                if (attempt < paramsAttempts)
-                {
-                    log(QStringLiteral("[%1] flashGetParams retry %2/%3 after: %4")
-                        .arg(identity.typeHex())
-                        .arg(attempt + 1)
-                        .arg(paramsAttempts)
-                        .arg(error));
-                    sleepWithEvents(500);
-                }
-            }
-            if (!paramsLoaded)
-            {
-                log(QStringLiteral("[%1] flashGetParams failed after %2 attempt(s): %3")
-                    .arg(identity.typeHex())
-                    .arg(paramsAttempts)
-                    .arg(error));
-                return false;
-            }
-            if (!raw.isEmpty())
-                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-
-            const int flashNum = mContext.flashPlan.flashNum;
-            if (flashNum < 0 || flashNum >= params.size() || !params.at(flashNum).isValid())
-            {
-                log(QStringLiteral("[%1] flash #%2 is not available").arg(identity.typeHex()).arg(flashNum));
-                return false;
-            }
-
-            mContext.flashPlan.pageSize = params.at(flashNum).pageSize;
-            const int pagesCount = params.at(flashNum).pagesCount;
-            const bool isIntelHex = mContext.flashPlan.artifact.format.compare(QStringLiteral("intelHex"), Qt::CaseInsensitive) == 0
-                || mContext.flashPlan.fileName.endsWith(QStringLiteral(".hex"), Qt::CaseInsensitive)
-                || mContext.flashPlan.fileName.endsWith(QStringLiteral(".ldr"), Qt::CaseInsensitive);
-            if (isIntelHex)
-            {
-                const int maxImageSize = pagesCount * mContext.flashPlan.pageSize - mContext.flashPlan.offset;
-                IntelHexImage image;
-                if (!parseIntelHex(mContext.flashPlan.data,
-                        mContext.flashPlan.artifact.addressBase,
-                        maxImageSize,
-                        &image,
-                        &error))
-                {
-                    log(QStringLiteral("[%1] Intel HEX parse failed: %2").arg(identity.typeHex(), error));
-                    return false;
-                }
-                mContext.flashPlan.data = image.data;
-                log(QStringLiteral("[%1] Intel HEX loaded %2 flash bytes from base 0x%3; ignored %4 out-of-range bytes")
-                    .arg(identity.typeHex())
-                    .arg(image.data.size())
-                    .arg(mContext.flashPlan.artifact.addressBase, 8, 16, QLatin1Char('0'))
-                    .arg(image.ignoredBytes));
-            }
-            const int firstPage = qMax(0, mContext.flashPlan.offset / mContext.flashPlan.pageSize);
-            const int firstPageOffset = qMax(0, mContext.flashPlan.offset % mContext.flashPlan.pageSize);
-            const int pagesToWrite = (firstPageOffset + mContext.flashPlan.data.size() + mContext.flashPlan.pageSize - 1) / mContext.flashPlan.pageSize;
-            if (pagesToWrite <= 0 || firstPage + pagesToWrite > pagesCount)
-            {
-                log(QStringLiteral("[%1] firmware does not fit flash #%2: size=%3 pageSize=%4 pages=%5")
-                    .arg(identity.typeHex())
-                    .arg(flashNum)
-                    .arg(mContext.flashPlan.data.size())
-                    .arg(mContext.flashPlan.pageSize)
-                    .arg(pagesCount));
-                return false;
-            }
-
-            mContext.flashPlan.firstWrittenPage = firstPage;
-            mContext.flashPlan.expectedPages.clear();
-
-            log(QStringLiteral("[%1] writing %2 bytes to flash #%3, pages %4-%5")
-                .arg(identity.typeHex())
-                .arg(mContext.flashPlan.data.size())
-                .arg(flashNum)
-                .arg(firstPage)
-                .arg(firstPage + pagesToWrite - 1));
-
-            for (int pageIndex = 0; pageIndex < pagesToWrite; ++pageIndex)
-            {
-                QByteArray page(mContext.flashPlan.pageSize, char(0xFF));
-                const int targetOffset = pageIndex == 0 ? firstPageOffset : 0;
-                const int sourceOffset = pageIndex * mContext.flashPlan.pageSize - firstPageOffset;
-                const int normalizedSourceOffset = qMax(0, sourceOffset);
-                const int chunkSize = qMin(mContext.flashPlan.pageSize - targetOffset, mContext.flashPlan.data.size() - normalizedSourceOffset);
-                std::copy(mContext.flashPlan.data.constBegin() + normalizedSourceOffset,
-                    mContext.flashPlan.data.constBegin() + normalizedSourceOffset + chunkSize,
-                    page.begin() + targetOffset);
-                mContext.flashPlan.expectedPages.append(page);
-
-                raw.clear();
-                if (!device.flashWritePage(flashNum, firstPage + pageIndex, page, &error, &raw))
-                {
-                    if (!raw.isEmpty())
-                        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-                    log(QStringLiteral("[%1] flash page %2 write failed: %3")
-                        .arg(identity.typeHex())
-                        .arg(firstPage + pageIndex)
-                        .arg(error));
-                    return false;
-                }
-                if (!raw.isEmpty())
-                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-
-                const int percent = ((pageIndex + 1) * 80) / pagesToWrite;
-                progress(percent);
-                log(QStringLiteral("[%1] flash #%2 wrote page %3 of %4")
-                    .arg(identity.typeHex())
-                    .arg(flashNum)
-                    .arg(pageIndex + 1)
-                    .arg(pagesToWrite));
-                processEvents();
-            }
-
-            if (mContext.flashPlan.verifyAfterWrite)
-                return verifyFlashPages(device);
-            else
-            {
-                progress(100);
-            }
         }
         return true;
     }

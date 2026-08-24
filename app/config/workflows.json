@@ -47,10 +47,9 @@
           "ms": 1000
         },
         {
-          "op": "device.loadApplication",
+          "op": "device.loadApplicationNoReply",
           "label": "load application",
-          "message": "load main application",
-          "retry": 4
+          "message": "load main application, response is not expected"
         },
         {
           "op": "log",
@@ -103,10 +102,9 @@
           "ms": 1000
         },
         {
-          "op": "device.loadApplication",
+          "op": "device.loadApplicationNoReply",
           "label": "load application",
-          "message": "load main application",
-          "retry": 4
+          "message": "load main application, response is not expected"
         },
         {
           "op": "log",
@@ -160,10 +158,46 @@
       ]
     },
     {
-      "id": "firmware.transition",
+      "id": "firmware.application.standard",
       "steps": [
         {
-          "op": "firmware.executeTransition"
+          "op": "device.ensureUuid"
+        },
+        {
+          "op": "firmware.validateTransition"
+        },
+        {
+          "op": "device.enterBootloader",
+          "timeoutMs": 15000,
+          "pollIntervalMs": 500,
+          "settleMs": 250
+        },
+        {
+          "op": "device.disableApplicationLoad"
+        },
+        {
+          "op": "firmware.validateArtifact"
+        },
+        {
+          "op": "firmware.flash"
+        },
+        {
+          "op": "firmware.verify"
+        },
+        {
+          "op": "device.loadApplicationNoReply",
+          "message": "load main application, response is not expected"
+        },
+        {
+          "op": "device.waitForApplication",
+          "timeoutMs": 15000,
+          "pollIntervalMs": 1000
+        },
+        {
+          "op": "firmware.verifyInstalledVersion"
+        },
+        {
+          "op": "firmware.complete"
         },
         {
           "op": "workflow.finish"
@@ -183,7 +217,10 @@
           "op": "flash.preflight"
         },
         {
-          "op": "flash.simulateWrite"
+          "op": "firmware.flash"
+        },
+        {
+          "op": "firmware.verify"
         },
         {
           "op": "flash.complete"

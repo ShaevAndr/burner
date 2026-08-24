@@ -4,6 +4,7 @@ debug/catalog.o
 debug/device.o
 debug/boc_v12_device.o
 debug/discovery.o
+debug/firmware_flash_strategy.o
 debug/main.o
 debug/main_window.o
 debug/service_container.o

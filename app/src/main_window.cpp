@@ -2,14 +2,14 @@
 #include "workers.h"
 
 #include <QCheckBox>
-#include <QDateEdit>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
-#include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -17,9 +17,10 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QProgressBar>
+#include <QRegularExpressionValidator>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QThread>
-#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -48,6 +49,27 @@ enum FirmwareColumns
     FirmwareColumnCount
 };
 
+enum DeviceActionColumns
+{
+    DeviceActionCheck = 0,
+    DeviceActionActions,
+    DeviceActionDevice,
+    DeviceActionNumber,
+    DeviceActionAddress,
+    DeviceActionChannel,
+    DeviceActionCurrent,
+    DeviceActionState,
+    DeviceActionColumnCount
+};
+
+enum MainPages
+{
+    DiscoveryPage = 0,
+    FirmwarePage,
+    ProductionDatePage,
+    SerialNumberPage
+};
+
 static void configureCombo(QComboBox* combo)
 {
     combo->setView(new QListView(combo));
@@ -71,6 +93,37 @@ static QWidget* tableButtonCell(QPushButton* first, QPushButton* second = nullpt
         layout->addWidget(second);
     layout->addStretch();
     return cell;
+}
+
+static void configureDeviceActionTable(QTableWidget* table, bool showCheckboxes)
+{
+    table->setHorizontalHeaderLabels({
+        QString(), QString(), QStringLiteral("Device"), QStringLiteral("Number"),
+        QStringLiteral("Address"), QStringLiteral("Channel"), QStringLiteral("Firmware"),
+        QStringLiteral("State")
+    });
+    table->verticalHeader()->setVisible(false);
+    table->verticalHeader()->setMinimumSectionSize(54);
+    table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setAlternatingRowColors(true);
+    table->setWordWrap(true);
+    QHeaderView* header = table->horizontalHeader();
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    header->setStretchLastSection(false);
+    header->setMinimumSectionSize(42);
+    table->setColumnWidth(DeviceActionCheck, 42);
+    table->setColumnWidth(DeviceActionActions, 90);
+    table->setColumnWidth(DeviceActionDevice, 420);
+    table->setColumnWidth(DeviceActionNumber, 95);
+    table->setColumnWidth(DeviceActionAddress, 78);
+    table->setColumnWidth(DeviceActionChannel, 180);
+    table->setColumnWidth(DeviceActionCurrent, 205);
+    table->setColumnWidth(DeviceActionState, 95);
+    table->setColumnHidden(DeviceActionCheck, !showCheckboxes);
+    table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 }
 
 static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_ptr<DeviceBase>>& devices, const QString& target)
@@ -177,6 +230,8 @@ static QVariantMap artifactToMap(const FirmwareArtifact& artifact)
     map.insert(QStringLiteral("offset"), artifact.offset);
     map.insert(QStringLiteral("pageSize"), artifact.pageSize);
     map.insert(QStringLiteral("pagesCount"), artifact.pagesCount);
+    map.insert(QStringLiteral("flashStrategy"), artifact.flashStrategy);
+    map.insert(QStringLiteral("flashParameters"), artifact.flashParameters);
     return map;
 }
 
@@ -184,6 +239,7 @@ MainWindow::MainWindow(ServiceContainer* services, QWidget* parent) :
     QMainWindow(parent),
     mServices(services)
 {
+    qRegisterMetaType<DeviceIdentity>("DeviceIdentity");
     buildUi();
 
     connect(&mServices->udpDiscovery(), &IDiscoveryStrategy::deviceFound, this, &MainWindow::onDeviceFound);
@@ -232,19 +288,23 @@ void MainWindow::buildUi()
     mPages->setObjectName(QStringLiteral("main"));
     mPages->addWidget(buildDiscoveryPage());
     mPages->addWidget(buildFirmwarePage());
+    mPages->addWidget(buildProductionDatePage());
+    mPages->addWidget(buildSerialNumberPage());
     rootLayout->addWidget(mPages, 1);
 
     connect(mDiscoveryTabButton, &QPushButton::clicked, this, [this]() {
-        mPages->setCurrentIndex(0);
-        mDiscoveryTabButton->setChecked(true);
-        mFirmwareTabButton->setChecked(false);
+        showPage(DiscoveryPage);
     });
     connect(mFirmwareTabButton, &QPushButton::clicked, this, [this]() {
-        mPages->setCurrentIndex(1);
-        mDiscoveryTabButton->setChecked(false);
-        mFirmwareTabButton->setChecked(true);
+        showPage(FirmwarePage);
     });
-    mDiscoveryTabButton->setChecked(true);
+    connect(mProductionDateButton, &QPushButton::clicked, this, [this]() {
+        showPage(ProductionDatePage);
+    });
+    connect(mSerialNumberButton, &QPushButton::clicked, this, [this]() {
+        showPage(SerialNumberPage);
+    });
+    showPage(DiscoveryPage);
     setCentralWidget(root);
 
     setStyleSheet(QStringLiteral(R"(
@@ -297,7 +357,22 @@ QWidget* MainWindow::buildSidebar()
     mFirmwareTabButton->setCheckable(true);
     layout->addWidget(mDiscoveryTabButton);
     layout->addWidget(mFirmwareTabButton);
+
+    QLabel* actionsLabel = new QLabel(QStringLiteral("Действия с устройствами"));
+    actionsLabel->setObjectName(QStringLiteral("brandSub"));
+    layout->addWidget(actionsLabel);
+    mProductionDateButton = new QPushButton(QStringLiteral("Смена даты производства"));
+    mProductionDateButton->setObjectName(QStringLiteral("nav"));
+    mProductionDateButton->setCheckable(true);
+    mProductionDateButton->setToolTip(QStringLiteral("Открыть таблицу смены даты производства"));
+    mSerialNumberButton = new QPushButton(QStringLiteral("Смена номера устройства"));
+    mSerialNumberButton->setObjectName(QStringLiteral("nav"));
+    mSerialNumberButton->setCheckable(true);
+    mSerialNumberButton->setToolTip(QStringLiteral("Открыть таблицу индивидуальной смены номера"));
+    layout->addWidget(mProductionDateButton);
+    layout->addWidget(mSerialNumberButton);
     layout->addStretch();
+    updateNavigationActions();
     return sidebar;
 }
 
@@ -339,13 +414,7 @@ QWidget* MainWindow::buildFirmwarePage()
     header->addLayout(title);
     header->addStretch();
 
-    mFlashProgress = new QProgressBar;
-    mFlashProgress->setRange(0, 100);
-    mFlashProgress->setValue(0);
-    mFlashProgress->setFixedWidth(180);
-    mFlashProgress->setVisible(false);
-    mFlashProgress->setFormat(QStringLiteral("Flash %p%"));
-    header->addWidget(mFlashProgress);
+    header->addWidget(buildWorkflowProgressPanel());
     layout->addLayout(header);
     layout->addWidget(buildFirmwareTablePanel(), 3);
 
@@ -377,6 +446,73 @@ QWidget* MainWindow::buildFirmwarePage()
     logs->setSizes({620, 420});
     layout->addWidget(logs, 2);
     return page;
+}
+
+QWidget* MainWindow::buildProductionDatePage()
+{
+    QWidget* page = new QWidget;
+    page->setObjectName(QStringLiteral("page"));
+    QVBoxLayout* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(22, 16, 22, 18);
+    layout->setSpacing(14);
+
+    QLabel* h1 = new QLabel(QStringLiteral("Смена даты производства"));
+    h1->setObjectName(QStringLiteral("h1"));
+    QLabel* subtitle = new QLabel(QStringLiteral(
+        "Измените дату у одного устройства или отметьте несколько устройств для групповой операции."));
+    subtitle->setObjectName(QStringLiteral("subtitle"));
+    layout->addWidget(h1);
+    layout->addWidget(subtitle);
+    layout->addWidget(buildWorkflowProgressPanel());
+    layout->addWidget(buildProductionDateTablePanel(), 1);
+    return page;
+}
+
+QWidget* MainWindow::buildSerialNumberPage()
+{
+    QWidget* page = new QWidget;
+    page->setObjectName(QStringLiteral("page"));
+    QVBoxLayout* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(22, 16, 22, 18);
+    layout->setSpacing(14);
+
+    QLabel* h1 = new QLabel(QStringLiteral("Смена номера устройства"));
+    h1->setObjectName(QStringLiteral("h1"));
+    QLabel* subtitle = new QLabel(QStringLiteral(
+        "Номер изменяется только индивидуально — выберите действие в строке нужного устройства."));
+    subtitle->setObjectName(QStringLiteral("subtitle"));
+    layout->addWidget(h1);
+    layout->addWidget(subtitle);
+    layout->addWidget(buildWorkflowProgressPanel());
+    layout->addWidget(buildSerialNumberTablePanel(), 1);
+    return page;
+}
+
+QWidget* MainWindow::buildWorkflowProgressPanel()
+{
+    QWidget* panel = new QWidget;
+    QHBoxLayout* layout = new QHBoxLayout(panel);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(10);
+
+    QLabel* stage = new QLabel(QStringLiteral("Подготовка"));
+    stage->setObjectName(QStringLiteral("subtitle"));
+    stage->setMinimumWidth(260);
+    stage->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    QProgressBar* progress = new QProgressBar;
+    progress->setRange(0, 100);
+    progress->setValue(0);
+    progress->setFixedWidth(210);
+    progress->setFormat(QStringLiteral("%p%"));
+    layout->addStretch();
+    layout->addWidget(stage);
+    layout->addWidget(progress);
+
+    panel->setVisible(false);
+    mWorkflowProgressPanels.append(panel);
+    mWorkflowStageLabels.append(stage);
+    mWorkflowProgressBars.append(progress);
+    return panel;
 }
 
 QWidget* MainWindow::buildDiscoveryPanel()
@@ -558,12 +694,73 @@ QWidget* MainWindow::buildFirmwareTablePanel()
     return frame;
 }
 
+QWidget* MainWindow::buildProductionDateTablePanel()
+{
+    QFrame* frame = new QFrame;
+    frame->setObjectName(QStringLiteral("band"));
+    QVBoxLayout* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    QWidget* toolbar = new QWidget;
+    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(14, 12, 14, 12);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Все обнаруженные устройства</b>")));
+    toolbarLayout->addStretch();
+    mBulkProductionDateButton = new QPushButton(QStringLiteral("Изменить дату выбранным"));
+    mBulkProductionDateButton->setObjectName(QStringLiteral("primary"));
+    mBulkProductionDateButton->setAttribute(Qt::WA_AlwaysShowToolTips);
+    toolbarLayout->addWidget(mBulkProductionDateButton);
+    layout->addWidget(toolbar);
+
+    mProductionDateTable = new QTableWidget(0, DeviceActionColumnCount);
+    configureDeviceActionTable(mProductionDateTable, true);
+    layout->addWidget(mProductionDateTable, 1);
+
+    connect(mProductionDateTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
+    connect(mProductionDateTable->horizontalHeader(), &QHeaderView::sectionResized,
+        mProductionDateTable, [this]() {
+            mProductionDateTable->resizeRowsToContents();
+        });
+    connect(mBulkProductionDateButton, &QPushButton::clicked,
+        this, &MainWindow::runProductionDateUpdate);
+    return frame;
+}
+
+QWidget* MainWindow::buildSerialNumberTablePanel()
+{
+    QFrame* frame = new QFrame;
+    frame->setObjectName(QStringLiteral("band"));
+    QVBoxLayout* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    QWidget* toolbar = new QWidget;
+    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(14, 12, 14, 12);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Все обнаруженные устройства</b>")));
+    toolbarLayout->addStretch();
+    layout->addWidget(toolbar);
+
+    mSerialNumberTable = new QTableWidget(0, DeviceActionColumnCount);
+    configureDeviceActionTable(mSerialNumberTable, false);
+    layout->addWidget(mSerialNumberTable, 1);
+
+    connect(mSerialNumberTable->horizontalHeader(), &QHeaderView::sectionResized,
+        mSerialNumberTable, [this]() {
+            mSerialNumberTable->resizeRowsToContents();
+        });
+    return frame;
+}
+
 void MainWindow::startDiscovery()
 {
     ++mDiscoveryGeneration;
     mDevices.clear();
     mDiscoveryTable->setRowCount(0);
     mFirmwareTable->setRowCount(0);
+    mProductionDateTable->setRowCount(0);
+    mSerialNumberTable->setRowCount(0);
     updateBulkMenu();
     setBusy(true);
 
@@ -727,6 +924,79 @@ void MainWindow::updateLineMode()
 void MainWindow::updateBulkMenu()
 {
     rebuildBulkMenu();
+    rebuildProductionDateBulkAction();
+    updateNavigationActions();
+}
+
+QVector<std::shared_ptr<DeviceBase>> MainWindow::devicesForAction(
+    const QString& actionId,
+    bool includeBusy) const
+{
+    QVector<std::shared_ptr<DeviceBase>> devices;
+    for (const std::shared_ptr<DeviceBase>& device : mDevices)
+    {
+        if (!device || (!includeBusy && isDeviceBusy(device)))
+            continue;
+        const QVector<ActionSpec> available = mServices->actions().actionsForDevice(device->identity());
+        bool supported = false;
+        for (const ActionSpec& action : available)
+        {
+            if (action.id == actionId)
+            {
+                supported = true;
+                break;
+            }
+        }
+        if (supported)
+            devices.append(device);
+    }
+    return devices;
+}
+
+void MainWindow::showPage(int pageIndex)
+{
+    if (!mPages || pageIndex < 0 || pageIndex >= mPages->count())
+        return;
+
+    mPages->setCurrentIndex(pageIndex);
+    mDiscoveryTabButton->setChecked(pageIndex == DiscoveryPage);
+    mFirmwareTabButton->setChecked(pageIndex == FirmwarePage);
+    mProductionDateButton->setChecked(pageIndex == ProductionDatePage);
+    mSerialNumberButton->setChecked(pageIndex == SerialNumberPage);
+}
+
+void MainWindow::updateNavigationActions()
+{
+    if (!mProductionDateButton || !mSerialNumberButton)
+        return;
+
+    const QVector<std::shared_ptr<DeviceBase>> dateDevices = devicesForAction(
+        QStringLiteral("device.productionDate.update"));
+    const QVector<std::shared_ptr<DeviceBase>> serialDevices = devicesForAction(
+        QStringLiteral("device.serialNumber.update"));
+    mProductionDateButton->setEnabled(true);
+    mSerialNumberButton->setEnabled(true);
+    mProductionDateButton->setToolTip(dateDevices.isEmpty()
+        ? QStringLiteral("Открыть таблицу смены даты: совместимые устройства пока не найдены")
+        : QStringLiteral("Открыть таблицу смены даты для %1 совместимых устройств")
+            .arg(dateDevices.size()));
+    mSerialNumberButton->setToolTip(serialDevices.isEmpty()
+        ? QStringLiteral("Открыть таблицу смены номера: совместимые устройства пока не найдены")
+        : QStringLiteral("Открыть таблицу индивидуальной смены номера для %1 устройств")
+            .arg(serialDevices.size()));
+}
+
+void MainWindow::runProductionDateUpdate()
+{
+    const QVector<std::shared_ptr<DeviceBase>> devices = selectedProductionDateDevices();
+    if (devices.isEmpty())
+    {
+        QMessageBox::information(this,
+            QStringLiteral("Смена даты производства"),
+            QStringLiteral("Отметьте хотя бы одно доступное устройство в первом столбце."));
+        return;
+    }
+    executeAction(actionById(QStringLiteral("device.productionDate.update")), devices);
 }
 
 void MainWindow::runActionForRow(int row, const QString& actionId)
@@ -776,11 +1046,43 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
     WorkflowWorker* worker = new WorkflowWorker(&mServices->workflows(), action, devices, parameters);
     worker->moveToThread(thread);
 
+    struct WorkflowResult
+    {
+        bool received = false;
+        bool successful = false;
+        QString operation;
+        QString stage;
+    };
+    const auto result = std::make_shared<WorkflowResult>();
+
     connect(thread, &QThread::started, worker, &WorkflowWorker::run);
     connect(worker, &WorkflowWorker::logMessage, this, &MainWindow::appendLog);
     connect(worker, &WorkflowWorker::transportLogMessage, this, &MainWindow::appendTransportLog);
     connect(worker, &WorkflowWorker::progressChanged, this, &MainWindow::onWorkflowProgress);
-    connect(worker, &WorkflowWorker::finished, this, [this, devices](bool) {
+    connect(worker, &WorkflowWorker::stageChanged, this, &MainWindow::onWorkflowStageChanged);
+    connect(worker, &WorkflowWorker::identityRefreshed, this,
+        [this, devices](int deviceIndex, DeviceIdentity identity) {
+            if (deviceIndex < 0 || deviceIndex >= devices.size() || !devices.at(deviceIndex))
+                return;
+            if (!identity.uuid.isEmpty())
+                identity.id = identity.uuid;
+            identity = mServices->catalog().enrich(identity);
+            devices.at(deviceIndex)->updateIdentity(identity);
+            for (int row = 0; row < mDevices.size(); ++row)
+            {
+                if (mDevices.at(row) == devices.at(deviceIndex))
+                {
+                    updateDeviceRow(row, devices.at(deviceIndex));
+                    break;
+                }
+            }
+        });
+    connect(worker, &WorkflowWorker::finished, this,
+        [this, devices, result](bool successful, const QString& operation, const QString& stage) {
+        result->received = true;
+        result->successful = successful;
+        result->operation = operation;
+        result->stage = stage;
         for (const std::shared_ptr<DeviceBase>& device : devices)
         {
             for (int row = 0; row < mDevices.size(); ++row)
@@ -797,14 +1099,45 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
     connect(worker, &WorkflowWorker::finished, thread, &QThread::quit);
     connect(worker, &WorkflowWorker::finished, worker, &WorkflowWorker::deleteLater);
     connect(thread, &QThread::finished, thread, &QThread::deleteLater);
-    connect(thread, &QThread::finished, this, [this, thread, devices]() {
+    connect(thread, &QThread::finished, this, [this, thread, devices, action, result]() {
         if (mWorkflowThread == thread)
             mWorkflowThread = nullptr;
         setDevicesBusy(devices, false);
         setActionBusy(false);
+
+        const bool successful = result->received && result->successful;
+        const QString stage = workflowStageText(result->operation, result->stage);
+        const QString title = action.title.isEmpty() ? action.id : action.title;
+        QMessageBox notification(successful ? QMessageBox::Information : QMessageBox::Warning,
+            title,
+            successful
+                ? QStringLiteral("Операция завершена успешно.\nЭтап: %1\nДанные устройства обновлены.").arg(stage)
+                : QStringLiteral("Операция завершилась с ошибкой.\nЭтап: %1\nПодробности записаны в журнал операций.").arg(stage),
+            QMessageBox::Ok,
+            this);
+        notification.show();
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        if (successful)
+        {
+            for (QProgressBar* progress : mWorkflowProgressBars)
+                progress->setValue(100);
+            for (QLabel* label : mWorkflowStageLabels)
+                label->setText(QStringLiteral("Завершено"));
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
+        notification.exec();
+        for (QWidget* panel : mWorkflowProgressPanels)
+            panel->setVisible(false);
+        for (QProgressBar* progress : mWorkflowProgressBars)
+            progress->setValue(0);
     });
 
     mWorkflowThread = thread;
+    for (QWidget* panel : mWorkflowProgressPanels)
+        panel->setVisible(true);
+    for (QProgressBar* progress : mWorkflowProgressBars)
+        progress->setValue(0);
+    onWorkflowStageChanged(QStringLiteral("workflow.start"), QStringLiteral("start"));
     setDevicesBusy(devices, true);
     setActionBusy(true);
     thread->start();
@@ -827,11 +1160,83 @@ void MainWindow::appendTransportLog(const QString& message)
 
 void MainWindow::onWorkflowProgress(int percent)
 {
-    if (!mFlashProgress)
-        return;
+    // 100% is reserved for a confirmed successful result and is set immediately
+    // before the result notification is shown.
+    const int boundedPercent = qBound(0, percent, 99);
+    for (QWidget* panel : mWorkflowProgressPanels)
+        panel->setVisible(true);
+    for (QProgressBar* progress : mWorkflowProgressBars)
+        progress->setValue(boundedPercent);
+}
 
-    mFlashProgress->setVisible(true);
-    mFlashProgress->setValue(qBound(0, percent, 100));
+void MainWindow::onWorkflowStageChanged(const QString& operation, const QString& stage)
+{
+    const QString text = workflowStageText(operation, stage);
+    for (QWidget* panel : mWorkflowProgressPanels)
+        panel->setVisible(true);
+    for (QLabel* label : mWorkflowStageLabels)
+    {
+        label->setText(text);
+        label->setToolTip(text);
+    }
+}
+
+QString MainWindow::workflowStageText(const QString& operation, const QString& stage) const
+{
+    static const QHash<QString, QString> operationTitles = {
+        {QStringLiteral("workflow.start"), QStringLiteral("Подготовка операции")},
+        {QStringLiteral("workflow.definition"), QStringLiteral("Загрузка сценария")},
+        {QStringLiteral("workflow.complete"), QStringLiteral("Завершено")},
+        {QStringLiteral("workflow"), QStringLiteral("Выполнение сценария")},
+        {QStringLiteral("context.productionDate"), QStringLiteral("Проверка даты")},
+        {QStringLiteral("context.serialNumber"), QStringLiteral("Проверка номера")},
+        {QStringLiteral("device.ensureUuid"), QStringLiteral("Проверка UUID")},
+        {QStringLiteral("device.reset"), QStringLiteral("Перезагрузка устройства")},
+        {QStringLiteral("sleep"), QStringLiteral("Ожидание устройства")},
+        {QStringLiteral("device.connect"), QStringLiteral("Подключение к устройству")},
+        {QStringLiteral("device.enterBootloader"), QStringLiteral("Загрузка bootloader")},
+        {QStringLiteral("device.disableApplicationLoad"), QStringLiteral("Запрет загрузки приложения")},
+        {QStringLiteral("device.disableLoadApplication"), QStringLiteral("Запрет загрузки приложения")},
+        {QStringLiteral("device.writeProductionDate"), QStringLiteral("Запись даты производства")},
+        {QStringLiteral("device.writeSerialNumber"), QStringLiteral("Запись номера устройства")},
+        {QStringLiteral("device.loadApplication"), QStringLiteral("Запуск приложения")},
+        {QStringLiteral("device.loadApplicationNoReply"), QStringLiteral("Запуск приложения")},
+        {QStringLiteral("device.waitForApplication"), QStringLiteral("Ожидание приложения")},
+        {QStringLiteral("device.refreshIdentity"), QStringLiteral("Обновление данных устройства")},
+        {QStringLiteral("firmware.validateTransition"), QStringLiteral("Проверка перехода прошивки")},
+        {QStringLiteral("firmware.validateArtifact"), QStringLiteral("Проверка файла прошивки")},
+        {QStringLiteral("flash.validateArtifact"), QStringLiteral("Проверка файла прошивки")},
+        {QStringLiteral("flash.prepare"), QStringLiteral("Подготовка прошивки")},
+        {QStringLiteral("flash.preflight"), QStringLiteral("Подготовка flash-памяти")},
+        {QStringLiteral("firmware.flash"), QStringLiteral("Запись прошивки")},
+        {QStringLiteral("firmware.verify"), QStringLiteral("Проверка записанной прошивки")},
+        {QStringLiteral("firmware.verifyInstalledVersion"), QStringLiteral("Проверка версии прошивки")},
+        {QStringLiteral("firmware.complete"), QStringLiteral("Завершение прошивки")},
+        {QStringLiteral("flash.complete"), QStringLiteral("Завершение прошивки")},
+        {QStringLiteral("workflow.finish"), QStringLiteral("Завершение операции")},
+        {QStringLiteral("log"), QStringLiteral("Завершение операции")}
+    };
+    if (operationTitles.contains(operation))
+        return operationTitles.value(operation);
+    static const QHash<QString, QString> stageTitles = {
+        {QStringLiteral("queued"), QStringLiteral("Операция поставлена в очередь")},
+        {QStringLiteral("validating firmware artifact"), QStringLiteral("Проверка файла прошивки")},
+        {QStringLiteral("disable application loading"), QStringLiteral("Запрет загрузки приложения")},
+        {QStringLiteral("refresh identity"), QStringLiteral("Обновление данных устройства")},
+        {QStringLiteral("done"), QStringLiteral("Завершено")}
+    };
+    const QString normalizedStage = stage.trimmed().toLower();
+    if (stageTitles.contains(normalizedStage))
+        return stageTitles.value(normalizedStage);
+    if (normalizedStage.startsWith(QStringLiteral("read identity")))
+        return QStringLiteral("Чтение данных устройства");
+    if (normalizedStage.startsWith(QStringLiteral("prepare ")))
+        return QStringLiteral("Подготовка flash-памяти");
+    if (normalizedStage.startsWith(QStringLiteral("verify ")))
+        return QStringLiteral("Проверка записанных данных");
+    if (!stage.trimmed().isEmpty())
+        return stage.trimmed();
+    return QStringLiteral("Неизвестный этап");
 }
 
 bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, QVariantMap* parameters)
@@ -844,42 +1249,50 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
     if (action.id == QStringLiteral("device.productionDate.update"))
     {
         QDialog dialog(this);
-        dialog.setWindowTitle(QStringLiteral("Обновить дату производства"));
+        dialog.setWindowTitle(QStringLiteral("Смена даты производства"));
 
         QVBoxLayout* layout = new QVBoxLayout(&dialog);
-        QLabel* intro = new QLabel(QStringLiteral("Будет выполнен вход в bootloader, затем записан timestamp в регистр даты, который задаётся устройством."));
-        intro->setWordWrap(true);
-        layout->addWidget(intro);
-
-        QLabel* countLabel = new QLabel(QStringLiteral("Устройств для обработки: %1").arg(devices.size()));
-        layout->addWidget(countLabel);
-
-        QGridLayout* grid = new QGridLayout;
-        QLabel* dateLabel = new QLabel(QStringLiteral("Дата производства"));
-        QDateEdit* dateEdit = new QDateEdit(QDate::currentDate());
-        dateEdit->setCalendarPopup(true);
-        dateEdit->setDisplayFormat(QStringLiteral("dd.MM.yyyy"));
-        dateEdit->setMinimumDate(QDate(1970, 1, 1));
-        dateEdit->setMaximumDate(QDate(2099, 12, 31));
-        grid->addWidget(dateLabel, 0, 0);
-        grid->addWidget(dateEdit, 0, 1);
-        layout->addLayout(grid);
-
-        QLabel* details = new QLabel(QStringLiteral("Схема: reset -> wait for (Boot) -> int[0] = 0 -> int[dateIndex] = timestamp -> pause 1s -> int[0] = 1."));
-        details->setWordWrap(true);
-        layout->addWidget(details);
+        QLineEdit* dateEdit = new QLineEdit;
+        dateEdit->setInputMask(QStringLiteral("00.00.0000;_"));
+        dateEdit->setText(QDate::currentDate().toString(QStringLiteral("dd.MM.yyyy")));
+        dateEdit->setAccessibleName(QStringLiteral("Дата производства"));
+        dateEdit->setToolTip(QStringLiteral("Дата в формате ДД.ММ.ГГГГ"));
+        dateEdit->setMinimumWidth(240);
+        layout->addWidget(dateEdit);
 
         QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Продолжить"));
+        QPushButton* apply = buttons->button(QDialogButtonBox::Ok);
+        apply->setText(QStringLiteral("Применить"));
         buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
         connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         layout->addWidget(buttons);
 
+        const auto validateDate = [dateEdit, apply]() {
+            const QDate date = QDate::fromString(dateEdit->text(), QStringLiteral("dd.MM.yyyy"));
+            const bool valid = date.isValid()
+                && date >= QDate(1970, 1, 1)
+                && date <= QDate(2099, 12, 31);
+            apply->setEnabled(valid);
+            dateEdit->setStyleSheet(valid ? QString() : QStringLiteral("border: 1px solid #dc2626;"));
+            dateEdit->setToolTip(valid
+                ? QStringLiteral("Дата в формате ДД.ММ.ГГГГ")
+                : QStringLiteral("Введите корректную дату от 01.01.1970 до 31.12.2099"));
+        };
+        connect(dateEdit, &QLineEdit::textChanged, &dialog, validateDate);
+        validateDate();
+        dateEdit->setFocus();
+        dateEdit->selectAll();
+
         if (dialog.exec() != QDialog::Accepted)
             return false;
 
-        parameters->insert(QStringLiteral("productionDate"), dateEdit->date());
+        const QDate productionDate = QDate::fromString(dateEdit->text(), QStringLiteral("dd.MM.yyyy"));
+        if (!productionDate.isValid()
+            || productionDate < QDate(1970, 1, 1)
+            || productionDate > QDate(2099, 12, 31))
+            return false;
+        parameters->insert(QStringLiteral("productionDate"), productionDate);
         return true;
     }
 
@@ -888,43 +1301,55 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         if (devices.size() != 1 || !devices.first())
             return false;
 
-        const DeviceIdentity& identity = devices.first()->identity();
-
         QDialog dialog(this);
-        dialog.setWindowTitle(QStringLiteral("Change device number"));
+        dialog.setWindowTitle(QStringLiteral("Смена номера устройства"));
 
         QVBoxLayout* layout = new QVBoxLayout(&dialog);
-        QLabel* intro = new QLabel(QStringLiteral("The number will be written in bootloader mode. BOC-V-12 uses int[10]."));
-        intro->setWordWrap(true);
-        layout->addWidget(intro);
-
-        QLabel* deviceLabel = new QLabel(QStringLiteral("%1 %2, %3")
-            .arg(identity.typeHex(), identity.versionHex(), identity.endpoint));
-        deviceLabel->setWordWrap(true);
-        layout->addWidget(deviceLabel);
-
-        QFormLayout* form = new QFormLayout;
-        QSpinBox* serialEdit = new QSpinBox;
-        serialEdit->setRange(0, 999999);
-        serialEdit->setValue(identity.serialNumber.toInt());
-        form->addRow(QStringLiteral("New number"), serialEdit);
-        layout->addLayout(form);
-
-        QLabel* details = new QLabel(QStringLiteral("Flow: if needed reset -> wait for (Boot) -> int[0] = 0 -> int[serialIndex] = number -> pause 1s -> int[0] = 1."));
-        details->setWordWrap(true);
-        layout->addWidget(details);
+        QLineEdit* serialEdit = new QLineEdit;
+        serialEdit->setMaxLength(6);
+        serialEdit->setValidator(new QRegularExpressionValidator(
+            QRegularExpression(QStringLiteral("^[0-9]{1,6}$")), serialEdit));
+        serialEdit->setPlaceholderText(QStringLiteral("Номер от 0 до 999999"));
+        serialEdit->setAccessibleName(QStringLiteral("Номер устройства"));
+        serialEdit->setToolTip(QStringLiteral("Число от 0 до 999999"));
+        serialEdit->setMinimumWidth(240);
+        const QString currentSerial = devices.first()->identity().serialNumber;
+        if (!currentSerial.isEmpty())
+            serialEdit->setText(currentSerial);
+        layout->addWidget(serialEdit);
 
         QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Continue"));
-        buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Cancel"));
+        QPushButton* apply = buttons->button(QDialogButtonBox::Ok);
+        apply->setText(QStringLiteral("Применить"));
+        buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
         connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         layout->addWidget(buttons);
 
+        const auto validateSerial = [serialEdit, apply]() {
+            bool numberOk = false;
+            const int number = serialEdit->text().toInt(&numberOk);
+            const bool valid = serialEdit->hasAcceptableInput()
+                && numberOk && number >= 0 && number <= 999999;
+            apply->setEnabled(valid);
+            serialEdit->setStyleSheet(valid ? QString() : QStringLiteral("border: 1px solid #dc2626;"));
+            serialEdit->setToolTip(valid
+                ? QStringLiteral("Число от 0 до 999999")
+                : QStringLiteral("Введите от одной до шести цифр"));
+        };
+        connect(serialEdit, &QLineEdit::textChanged, &dialog, validateSerial);
+        validateSerial();
+        serialEdit->setFocus();
+        serialEdit->selectAll();
+
         if (dialog.exec() != QDialog::Accepted)
             return false;
 
-        parameters->insert(QStringLiteral("serialNumber"), serialEdit->value());
+        bool numberOk = false;
+        const int serialNumber = serialEdit->text().toInt(&numberOk);
+        if (!numberOk || serialNumber < 0 || serialNumber > 999999)
+            return false;
+        parameters->insert(QStringLiteral("serialNumber"), serialNumber);
         return true;
     }
 
@@ -1050,6 +1475,8 @@ void MainWindow::addDeviceRow(const std::shared_ptr<DeviceBase>& device)
     const int row = mDevices.size() - 1;
     mDiscoveryTable->insertRow(row);
     mFirmwareTable->insertRow(row);
+    mProductionDateTable->insertRow(row);
+    mSerialNumberTable->insertRow(row);
     updateDeviceRow(row, device);
 }
 
@@ -1057,6 +1484,8 @@ void MainWindow::updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& dev
 {
     updateDiscoveryDeviceRow(row, device);
     updateFirmwareDeviceRow(row, device);
+    updateProductionDateDeviceRow(row, device);
+    updateSerialNumberDeviceRow(row, device);
 }
 
 bool MainWindow::isDeviceBusy(const std::shared_ptr<DeviceBase>& device) const
@@ -1213,12 +1642,151 @@ void MainWindow::updateFirmwareDeviceRow(int row, const std::shared_ptr<DeviceBa
     mFirmwareTable->resizeRowToContents(row);
 }
 
+void MainWindow::updateProductionDateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
+{
+    updateDeviceActionRow(mProductionDateTable, row, device,
+        QStringLiteral("device.productionDate.update"), true);
+}
+
+void MainWindow::updateSerialNumberDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
+{
+    updateDeviceActionRow(mSerialNumberTable, row, device,
+        QStringLiteral("device.serialNumber.update"), false);
+}
+
+void MainWindow::updateDeviceActionRow(QTableWidget* table,
+    int row,
+    const std::shared_ptr<DeviceBase>& device,
+    const QString& actionId,
+    bool checkable)
+{
+    if (!table || !device || row < 0 || row >= table->rowCount())
+        return;
+
+    const QSignalBlocker blocker(table);
+    const DeviceIdentity& identity = device->identity();
+    const Qt::CheckState previousCheckState = table->item(row, DeviceActionCheck)
+        ? table->item(row, DeviceActionCheck)->checkState()
+        : Qt::Unchecked;
+
+    const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
+    bool canPing = false;
+    bool supportsAction = false;
+    for (const ActionSpec& spec : specs)
+    {
+        canPing = canPing || spec.id == QStringLiteral("device.ping");
+        supportsAction = supportsAction || spec.id == actionId;
+    }
+    const bool deviceBusy = isDeviceBusy(device);
+
+    QTableWidgetItem* check = new QTableWidgetItem;
+    check->setTextAlignment(Qt::AlignCenter);
+    if (checkable)
+    {
+        Qt::ItemFlags flags = Qt::ItemIsUserCheckable;
+        if (supportsAction && !deviceBusy)
+            flags |= Qt::ItemIsEnabled;
+        check->setFlags(flags);
+        check->setCheckState(supportsAction ? previousCheckState : Qt::Unchecked);
+        check->setToolTip(supportsAction
+            ? (deviceBusy
+                ? QStringLiteral("Устройство занято текущей операцией")
+                : QStringLiteral("Выбрать устройство для групповой смены даты"))
+            : QStringLiteral("Смена даты недоступна для этого устройства"));
+    }
+    else
+    {
+        check->setFlags(Qt::NoItemFlags);
+    }
+    table->setItem(row, DeviceActionCheck, check);
+
+    const QString deviceText = identity.description.isEmpty()
+        ? identity.name
+        : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
+    QTableWidgetItem* deviceItem = new QTableWidgetItem(deviceText);
+    deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
+        .arg(identity.typeHex(), identity.versionHex(),
+            identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
+    table->setItem(row, DeviceActionDevice, deviceItem);
+
+    const QString numberText = !identity.serialNumber.isEmpty() ? identity.serialNumber : identity.id;
+    QTableWidgetItem* number = new QTableWidgetItem(numberText);
+    if (identity.serialNumber.isEmpty())
+        number->setToolTip(QStringLiteral("ID %1").arg(identity.id));
+    table->setItem(row, DeviceActionNumber, number);
+    table->setItem(row, DeviceActionAddress,
+        new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString()));
+    table->setItem(row, DeviceActionChannel,
+        new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
+    table->setItem(row, DeviceActionCurrent,
+        new QTableWidgetItem(identity.currentFirmwareId.isEmpty() ? QStringLiteral("—") : identity.currentFirmwareId));
+    QTableWidgetItem* state = new QTableWidgetItem(identity.state);
+    state->setForeground(identity.isBootloader() ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#2563eb")));
+    table->setItem(row, DeviceActionState, state);
+
+    QPushButton* ping = new QPushButton;
+    ping->setObjectName(QStringLiteral("tablePing"));
+    ping->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    ping->setIconSize(QSize(18, 18));
+    ping->setAccessibleName(QStringLiteral("Ping"));
+    ping->setToolTip(deviceBusy
+        ? QStringLiteral("Дождитесь завершения текущей операции с устройством")
+        : QStringLiteral("Проверить связь с устройством"));
+    ping->setEnabled(canPing && !deviceBusy);
+    connect(ping, &QPushButton::clicked, this, [this, row]() {
+        runActionForRow(row, QStringLiteral("device.ping"));
+    });
+
+    const bool productionDateAction = actionId == QStringLiteral("device.productionDate.update");
+    const QString actionName = productionDateAction
+        ? QStringLiteral("Изменить дату производства")
+        : QStringLiteral("Изменить номер устройства");
+    QPushButton* actionButton = new QPushButton;
+    actionButton->setObjectName(QStringLiteral("tableFlash"));
+    actionButton->setIcon(style()->standardIcon(productionDateAction
+        ? QStyle::SP_FileDialogDetailedView
+        : QStyle::SP_FileDialogContentsView));
+    actionButton->setIconSize(QSize(18, 18));
+    actionButton->setAccessibleName(actionName);
+    actionButton->setAttribute(Qt::WA_AlwaysShowToolTips);
+    if (deviceBusy)
+        actionButton->setToolTip(QStringLiteral("Дождитесь завершения текущей операции с устройством"));
+    else if (mWorkflowThread)
+        actionButton->setToolTip(QStringLiteral("Дождитесь завершения текущей операции"));
+    else if (!supportsAction)
+        actionButton->setToolTip(QStringLiteral("%1 недоступно для этого устройства").arg(actionName));
+    else
+        actionButton->setToolTip(actionName);
+    actionButton->setEnabled(supportsAction && !deviceBusy && !mWorkflowThread);
+    connect(actionButton, &QPushButton::clicked, this, [this, row, actionId]() {
+        runActionForRow(row, actionId);
+    });
+
+    table->setCellWidget(row, DeviceActionActions, tableButtonCell(ping, actionButton));
+    table->resizeRowToContents(row);
+}
+
 QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedDevices() const
 {
     QVector<std::shared_ptr<DeviceBase>> selected;
     for (int row = 0; row < mFirmwareTable->rowCount() && row < mDevices.size(); ++row)
     {
         const QTableWidgetItem* item = mFirmwareTable->item(row, FirmwareCheck);
+        if (item && item->checkState() == Qt::Checked)
+            selected.append(mDevices.at(row));
+    }
+    return selected;
+}
+
+QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedProductionDateDevices() const
+{
+    QVector<std::shared_ptr<DeviceBase>> selected;
+    if (!mProductionDateTable)
+        return selected;
+
+    for (int row = 0; row < mProductionDateTable->rowCount() && row < mDevices.size(); ++row)
+    {
+        const QTableWidgetItem* item = mProductionDateTable->item(row, DeviceActionCheck);
         if (item && item->checkState() == Qt::Checked)
             selected.append(mDevices.at(row));
     }
@@ -1350,23 +1918,68 @@ void MainWindow::rebuildBulkMenu()
     mBulkFlashButton->setEnabled(hasCommonFirmware && !hasBusyDevice && !mWorkflowThread);
 }
 
+void MainWindow::rebuildProductionDateBulkAction()
+{
+    if (!mBulkProductionDateButton)
+        return;
+
+    const QVector<std::shared_ptr<DeviceBase>> selected = selectedProductionDateDevices();
+    bool hasBusyDevice = false;
+    bool allSupported = !selected.isEmpty();
+    for (const std::shared_ptr<DeviceBase>& device : selected)
+    {
+        hasBusyDevice = hasBusyDevice || isDeviceBusy(device);
+        bool supported = false;
+        if (device)
+        {
+            const QVector<ActionSpec> actions = mServices->actions().actionsForDevice(device->identity());
+            for (const ActionSpec& action : actions)
+                supported = supported || action.id == QStringLiteral("device.productionDate.update");
+        }
+        allSupported = allSupported && supported;
+    }
+
+    mBulkProductionDateButton->setText(selected.isEmpty()
+        ? QStringLiteral("Изменить дату выбранным")
+        : QStringLiteral("Изменить дату выбранным (%1)").arg(selected.size()));
+    if (selected.isEmpty())
+        mBulkProductionDateButton->setToolTip(
+            QStringLiteral("Выберите устройства флажками в первом столбце"));
+    else if (hasBusyDevice)
+        mBulkProductionDateButton->setToolTip(
+            QStringLiteral("Дождитесь завершения операции с выбранным устройством"));
+    else if (!allSupported)
+        mBulkProductionDateButton->setToolTip(
+            QStringLiteral("Смена даты недоступна для одного из выбранных устройств"));
+    else if (mWorkflowThread)
+        mBulkProductionDateButton->setToolTip(
+            QStringLiteral("Дождитесь завершения текущей операции"));
+    else
+        mBulkProductionDateButton->setToolTip(
+            QStringLiteral("Установить одну дату на отмеченных устройствах"));
+    mBulkProductionDateButton->setEnabled(allSupported && !hasBusyDevice && !mWorkflowThread);
+}
+
 void MainWindow::setActionBusy(bool busy)
 {
     if (mBulkFlashButton)
         mBulkFlashButton->setEnabled(false);
+    if (mBulkProductionDateButton)
+        mBulkProductionDateButton->setEnabled(false);
     for (int row = 0; row < mDevices.size(); ++row)
         updateDeviceRow(row, mDevices.at(row));
     if (!busy)
-        rebuildBulkMenu();
+        updateBulkMenu();
+    updateNavigationActions();
     if (mSearchButton)
         mSearchButton->setEnabled(!busy);
-    if (mFlashProgress && !busy && mFlashProgress->value() >= 100)
-        mFlashProgress->setVisible(false);
 }
 
 void MainWindow::setBusy(bool busy)
 {
+    mDiscoveryBusy = busy;
     mSearchButton->setEnabled(!busy);
     mSearchButton->setText(busy ? QStringLiteral("Идет поиск...") :
         (mLineMode->currentData().toString() == QStringLiteral("rs485") ? QStringLiteral("Поиск RS-485") : QStringLiteral("Broadcast поиск")));
+    updateNavigationActions();
 }

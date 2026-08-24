@@ -2,6 +2,7 @@
 #define DEVICE_WORKBENCH_MODELS_H
 
 #include <QHash>
+#include <QMetaType>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -22,13 +23,15 @@ struct FirmwareArtifact
     int offset = 0;
     int pageSize = 0;
     int pagesCount = 0;
+    QString flashStrategy;
+    QVariantMap flashParameters;
 };
 
-struct FirmwarePipelineStep
+struct FirmwareInstallationSpec
 {
-    QString type;
-    QString skipIfState;
-    QVariantMap arguments;
+    QString workflow;
+    QString strategy;
+    QVariantMap parameters;
 };
 
 struct FirmwareVersionSpec
@@ -39,6 +42,7 @@ struct FirmwareVersionSpec
     QString descriptionRegex;
     bool detectFromDescription = true;
     FirmwareArtifact artifact;
+    FirmwareInstallationSpec installation;
 };
 
 struct FirmwareTransitionSpec
@@ -47,7 +51,6 @@ struct FirmwareTransitionSpec
     QString to;
     bool enabled = false;
     QString reason;
-    QVector<FirmwarePipelineStep> pipeline;
 };
 
 struct FlashMemoryParams
@@ -77,20 +80,19 @@ struct DeviceIdentity
     QString state = QStringLiteral("application");
 
     QString catalogId;
-    QString expectedDescription;
-    QString expectedDescriptionPattern;
+    QStringList descriptionKeywords;
     QString deviceClass;
     QString status;
     bool known = false;
-    bool descriptionMismatch = false;
     QString currentFirmwareId;
     QString firmwareDetectionError;
     quint16 applicationType = 0;
     quint16 applicationVersion = 0;
     quint16 bootloaderType = 0;
     quint16 bootloaderVersion = 0;
+    int productionDateRegister = -1;
+    int serialNumberRegister = -1;
     QStringList capabilities;
-    QHash<QString, QString> flashWorkflows;
     QVector<FirmwareArtifact> firmwareArtifacts;
     QVector<FirmwareVersionSpec> firmwareVersions;
     QVector<FirmwareTransitionSpec> firmwareTransitions;
@@ -154,12 +156,17 @@ struct CatalogEntry
     quint16 version = 0;
     quint16 bootloaderType = 0;
     quint16 bootloaderVersion = 0;
+    int productionDateRegister = -1;
+    int serialNumberRegister = -1;
     QString name;
-    QString expectedDescription;
-    QString expectedDescriptionPattern;
+    QStringList descriptionKeywords;
     QString deviceClass;
     QStringList capabilities;
-    QHash<QString, QString> flashWorkflows;
+};
+
+struct FirmwareCatalog
+{
+    QString deviceId;
     QVector<FirmwareArtifact> firmwareArtifacts;
     QVector<FirmwareVersionSpec> firmwareVersions;
     QVector<FirmwareTransitionSpec> firmwareTransitions;
@@ -186,5 +193,7 @@ struct DiscoverySettings
     int addressEnd = 64;
     int timeoutMs = 2000;
 };
+
+Q_DECLARE_METATYPE(DeviceIdentity)
 
 #endif // DEVICE_WORKBENCH_MODELS_H

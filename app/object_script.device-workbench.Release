@@ -4,6 +4,7 @@ release/catalog.o
 release/device.o
 release/boc_v12_device.o
 release/discovery.o
+release/firmware_flash_strategy.o
 release/main.o
 release/main_window.o
 release/service_container.o

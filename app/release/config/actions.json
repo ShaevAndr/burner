@@ -17,7 +17,7 @@
           "required": true
         }
       ],
-      "workflow": "firmware.transition"
+      "workflow": "firmware.application.standard"
     },
     {
       "id": "flash.bootloader.write",

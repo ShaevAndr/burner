@@ -3,6 +3,7 @@ release/action_repository.o
 release/base_device.o
 release/catalog.o
 release/device.o
+release/firmware_flash_strategy.o
 release/boc_v12_device.o
 release/unicorn_ascii_transport.o
 release/workflow.o

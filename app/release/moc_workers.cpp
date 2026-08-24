@@ -143,8 +143,8 @@ void UuidWorker::finished(quint64 _t1, QString _t2, QString _t3, QString _t4)
     QMetaObject::activate(this, &staticMetaObject, 0, _a);
 }
 struct qt_meta_stringdata_WorkflowWorker_t {
-    QByteArrayData data[10];
-    char stringdata0[103];
+    QByteArrayData data[18];
+    char stringdata0[201];
 };
 #define QT_MOC_LITERAL(idx, ofs, len) \
     Q_STATIC_BYTE_ARRAY_DATA_HEADER_INITIALIZER_WITH_OFFSET(len, \
@@ -160,14 +160,25 @@ QT_MOC_LITERAL(3, 27, 7), // "message"
 QT_MOC_LITERAL(4, 35, 19), // "transportLogMessage"
 QT_MOC_LITERAL(5, 55, 15), // "progressChanged"
 QT_MOC_LITERAL(6, 71, 7), // "percent"
-QT_MOC_LITERAL(7, 79, 8), // "finished"
-QT_MOC_LITERAL(8, 88, 10), // "successful"
-QT_MOC_LITERAL(9, 99, 3) // "run"
+QT_MOC_LITERAL(7, 79, 12), // "stageChanged"
+QT_MOC_LITERAL(8, 92, 9), // "operation"
+QT_MOC_LITERAL(9, 102, 5), // "stage"
+QT_MOC_LITERAL(10, 108, 17), // "identityRefreshed"
+QT_MOC_LITERAL(11, 126, 11), // "deviceIndex"
+QT_MOC_LITERAL(12, 138, 14), // "DeviceIdentity"
+QT_MOC_LITERAL(13, 153, 8), // "identity"
+QT_MOC_LITERAL(14, 162, 8), // "finished"
+QT_MOC_LITERAL(15, 171, 10), // "successful"
+QT_MOC_LITERAL(16, 182, 14), // "stageOperation"
+QT_MOC_LITERAL(17, 197, 3) // "run"
 
     },
     "WorkflowWorker\0logMessage\0\0message\0"
     "transportLogMessage\0progressChanged\0"
-    "percent\0finished\0successful\0run"
+    "percent\0stageChanged\0operation\0stage\0"
+    "identityRefreshed\0deviceIndex\0"
+    "DeviceIdentity\0identity\0finished\0"
+    "successful\0stageOperation\0run"
 };
 #undef QT_MOC_LITERAL
 
@@ -177,27 +188,31 @@ static const uint qt_meta_data_WorkflowWorker[] = {
        8,       // revision
        0,       // classname
        0,    0, // classinfo
-       5,   14, // methods
+       7,   14, // methods
        0,    0, // properties
        0,    0, // enums/sets
        0,    0, // constructors
        0,       // flags
-       4,       // signalCount
+       6,       // signalCount
 
  // signals: name, argc, parameters, tag, flags
-       1,    1,   39,    2, 0x06 /* Public */,
-       4,    1,   42,    2, 0x06 /* Public */,
-       5,    1,   45,    2, 0x06 /* Public */,
-       7,    1,   48,    2, 0x06 /* Public */,
+       1,    1,   49,    2, 0x06 /* Public */,
+       4,    1,   52,    2, 0x06 /* Public */,
+       5,    1,   55,    2, 0x06 /* Public */,
+       7,    2,   58,    2, 0x06 /* Public */,
+      10,    2,   63,    2, 0x06 /* Public */,
+      14,    3,   68,    2, 0x06 /* Public */,
 
  // slots: name, argc, parameters, tag, flags
-       9,    0,   51,    2, 0x0a /* Public */,
+      17,    0,   75,    2, 0x0a /* Public */,
 
  // signals: parameters
     QMetaType::Void, QMetaType::QString,    3,
     QMetaType::Void, QMetaType::QString,    3,
     QMetaType::Void, QMetaType::Int,    6,
-    QMetaType::Void, QMetaType::Bool,    8,
+    QMetaType::Void, QMetaType::QString, QMetaType::QString,    8,    9,
+    QMetaType::Void, QMetaType::Int, 0x80000000 | 12,   11,   13,
+    QMetaType::Void, QMetaType::Bool, QMetaType::QString, QMetaType::QString,   15,   16,    9,
 
  // slots: parameters
     QMetaType::Void,
@@ -214,9 +229,22 @@ void WorkflowWorker::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _
         case 0: _t->logMessage((*reinterpret_cast< QString(*)>(_a[1]))); break;
         case 1: _t->transportLogMessage((*reinterpret_cast< QString(*)>(_a[1]))); break;
         case 2: _t->progressChanged((*reinterpret_cast< int(*)>(_a[1]))); break;
-        case 3: _t->finished((*reinterpret_cast< bool(*)>(_a[1]))); break;
-        case 4: _t->run(); break;
+        case 3: _t->stageChanged((*reinterpret_cast< QString(*)>(_a[1])),(*reinterpret_cast< QString(*)>(_a[2]))); break;
+        case 4: _t->identityRefreshed((*reinterpret_cast< int(*)>(_a[1])),(*reinterpret_cast< DeviceIdentity(*)>(_a[2]))); break;
+        case 5: _t->finished((*reinterpret_cast< bool(*)>(_a[1])),(*reinterpret_cast< QString(*)>(_a[2])),(*reinterpret_cast< QString(*)>(_a[3]))); break;
+        case 6: _t->run(); break;
         default: ;
+        }
+    } else if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
+        switch (_id) {
+        default: *reinterpret_cast<int*>(_a[0]) = -1; break;
+        case 4:
+            switch (*reinterpret_cast<int*>(_a[1])) {
+            default: *reinterpret_cast<int*>(_a[0]) = -1; break;
+            case 1:
+                *reinterpret_cast<int*>(_a[0]) = qRegisterMetaType< DeviceIdentity >(); break;
+            }
+            break;
         }
     } else if (_c == QMetaObject::IndexOfMethod) {
         int *result = reinterpret_cast<int *>(_a[0]);
@@ -242,9 +270,23 @@ void WorkflowWorker::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _
             }
         }
         {
-            using _t = void (WorkflowWorker::*)(bool );
-            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&WorkflowWorker::finished)) {
+            using _t = void (WorkflowWorker::*)(QString , QString );
+            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&WorkflowWorker::stageChanged)) {
                 *result = 3;
+                return;
+            }
+        }
+        {
+            using _t = void (WorkflowWorker::*)(int , DeviceIdentity );
+            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&WorkflowWorker::identityRefreshed)) {
+                *result = 4;
+                return;
+            }
+        }
+        {
+            using _t = void (WorkflowWorker::*)(bool , QString , QString );
+            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&WorkflowWorker::finished)) {
+                *result = 5;
                 return;
             }
         }
@@ -280,13 +322,13 @@ int WorkflowWorker::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
     if (_id < 0)
         return _id;
     if (_c == QMetaObject::InvokeMetaMethod) {
-        if (_id < 5)
+        if (_id < 7)
             qt_static_metacall(this, _c, _id, _a);
-        _id -= 5;
+        _id -= 7;
     } else if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
-        if (_id < 5)
-            *reinterpret_cast<int*>(_a[0]) = -1;
-        _id -= 5;
+        if (_id < 7)
+            qt_static_metacall(this, _c, _id, _a);
+        _id -= 7;
     }
     return _id;
 }
@@ -313,10 +355,24 @@ void WorkflowWorker::progressChanged(int _t1)
 }
 
 // SIGNAL 3
-void WorkflowWorker::finished(bool _t1)
+void WorkflowWorker::stageChanged(QString _t1, QString _t2)
 {
-    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)) };
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)) };
     QMetaObject::activate(this, &staticMetaObject, 3, _a);
+}
+
+// SIGNAL 4
+void WorkflowWorker::identityRefreshed(int _t1, DeviceIdentity _t2)
+{
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)) };
+    QMetaObject::activate(this, &staticMetaObject, 4, _a);
+}
+
+// SIGNAL 5
+void WorkflowWorker::finished(bool _t1, QString _t2, QString _t3)
+{
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)), const_cast<void*>(reinterpret_cast<const void*>(&_t3)) };
+    QMetaObject::activate(this, &staticMetaObject, 5, _a);
 }
 struct qt_meta_stringdata_PingWorker_t {
     QByteArrayData data[9];

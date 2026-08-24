@@ -1,0 +1,32 @@
+********* Start testing of DeviceWorkbenchTest *********
+Config: Using QtTest library 5.12.12, Qt 5.12.12 (x86_64-little_endian-llp64 shared (dynamic) release build; by GCC 7.3.0)
+PASS   : DeviceWorkbenchTest::initTestCase()
+PASS   : DeviceWorkbenchTest::catalogExposesBocV12Actions()
+PASS   : DeviceWorkbenchTest::catalogRecognizesBocV6()
+PASS   : DeviceWorkbenchTest::workflowEmitsProgressForTestFlash()
+PASS   : DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
+PASS   : DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
+PASS   : DeviceWorkbenchTest::catalogDetectsDeviceState()
+PASS   : DeviceWorkbenchTest::workflowWritesSerialNumberRegisterInBootloader()
+PASS   : DeviceWorkbenchTest::applicationLoadActionIsAvailableForBootloader()
+PASS   : DeviceWorkbenchTest::workflowLoadsApplicationFromBootloaderWithoutWaitingForReply()
+PASS   : DeviceWorkbenchTest::workflowWritesApplicationFlashPagesFromBootloader()
+PASS   : DeviceWorkbenchTest::workflowParsesIntelHexBeforeWriting()
+PASS   : DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
+PASS   : DeviceWorkbenchTest::workflowRejectsBootloaderWithDifferentUuid()
+PASS   : DeviceWorkbenchTest::workflowExecutesAllowedFirmwareTransition()
+PASS   : DeviceWorkbenchTest::workflowRejectsDisabledFirmwareTransition()
+PASS   : DeviceWorkbenchTest::unicornAsciiTransportFactoryCreatesTransport()
+PASS   : DeviceWorkbenchTest::pingActionIsSingleDeviceOnly()
+PASS   : DeviceWorkbenchTest::pingActionIsAvailableForUnknownDevices()
+PASS   : DeviceWorkbenchTest::deviceBaseWritesConfiguredServiceRegisters()
+PASS   : DeviceWorkbenchTest::deviceReadIntDelegatesToTransport()
+PASS   : DeviceWorkbenchTest::unicornAsciiReadRegisterReturnsAfterFirstValidResponse()
+PASS   : DeviceWorkbenchTest::unicornAsciiReadsUuid()
+SKIP   : DeviceWorkbenchTest::networkChangeSerialNumberBocV6() Set endpoint, expected serial and target serial to run the destructive serial-number test
+tst_device_workbench.cpp(1340) : failure location
+SKIP   : DeviceWorkbenchTest::networkPipelineBocV6() Set DEVICE_WORKBENCH_NETWORK_BOCV6_ENDPOINT to run the destructive network firmware test
+tst_device_workbench.cpp(1458) : failure location
+PASS   : DeviceWorkbenchTest::cleanupTestCase()
+Totals: 24 passed, 0 failed, 2 skipped, 0 blacklisted, 34857ms
+********* Finished testing of DeviceWorkbenchTest *********
