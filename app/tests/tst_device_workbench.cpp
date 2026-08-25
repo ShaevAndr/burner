@@ -7,10 +7,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -23,6 +19,7 @@
 #include "../src/device.h"
 #include "../src/transport/unicorn_ascii_transport.h"
 #include "../src/workflow.h"
+#include "../src/workers.h"
 
 class FakeDeviceTransport : public IDeviceTransport
 {
@@ -71,6 +68,8 @@ public:
 
     bool writeRegisterNoReply(const DeviceIdentity&, quint16 index, qint32 value, QString*, QString* rawResponse = nullptr) override
     {
+        if (noReplyWriteDelayMs > 0)
+            QThread::msleep(static_cast<unsigned long>(noReplyWriteDelayMs));
         noReplyWrites.append(WriteCall{index, value});
         if (rawResponse)
             *rawResponse = QStringLiteral("TX :000000E20000000000000000\\r\nRX <not expected>");
@@ -169,6 +168,7 @@ public:
     QString uuidValue = QStringLiteral("410FC241-3431-384D-1235-36353133584F");
     bool failWrites = false;
     bool waitForIdentityResult = true;
+    int noReplyWriteDelayMs = 0;
     QHash<int, QString> writeErrorsByAttempt;
 };
 
@@ -309,6 +309,8 @@ private slots:
     void workflowEmitsProductionDateSequence();
     void workflowWritesProductionDateRegistersInOrder();
     void workflowRestoresApplicationAfterProductionDateFailure();
+    void workflowSkipsProtectedSettingsWithoutFactoryKey();
+    void workflowWorkerRunsDevicesInParallel();
     void catalogDetectsDeviceState();
     void workflowWritesSerialNumberRegisterInBootloader();
     void applicationLoadActionIsAvailableForBootloader();
@@ -611,7 +613,10 @@ void DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
     QSignalSpy progressSpy(&runner, &WorkflowRunner::progressChanged);
 
-    runner.run(action, {deviceObject}, QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 7, 16)}});
+    runner.run(action, {deviceObject}, QVariantMap{
+        {QStringLiteral("productionDate"), QDate(2026, 7, 16)},
+        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
+    });
 
     bool sawBootloader = false;
     bool sawTimestampWrite = false;
@@ -679,8 +684,10 @@ void DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
     QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
     WorkflowRunner runner(&workflows);
 
-    QVERIFY(runner.run(action, {deviceObject},
-        QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 7, 16)}}));
+    QVERIFY(runner.run(action, {deviceObject}, QVariantMap{
+        {QStringLiteral("productionDate"), QDate(2026, 7, 16)},
+        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
+    }));
 
     QCOMPARE(transport->writes.size(), 2);
     QCOMPARE(transport->writeAttempts, 3);
@@ -731,8 +738,10 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
     WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
 
-    QVERIFY(!runner.run(action, {deviceObject},
-        QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 8, 25)}}));
+    QVERIFY(!runner.run(action, {deviceObject}, QVariantMap{
+        {QStringLiteral("productionDate"), QDate(2026, 8, 25)},
+        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
+    }));
     QCOMPARE(transport->writeAttempts, 5);
     QCOMPARE(transport->noReplyWrites.size(), 1);
     QCOMPARE(transport->noReplyWrites.first().value, qint32(1));
@@ -746,6 +755,110 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
             sawRecovery = true;
     }
     QVERIFY2(sawRecovery, "Failed service-data update must restore the main application");
+}
+
+void DeviceWorkbenchTest::workflowSkipsProtectedSettingsWithoutFactoryKey()
+{
+    DeviceIdentity identity;
+    identity.type = 0x0A02;
+    identity.version = 0x0001;
+    identity.endpoint = QStringLiteral("192.168.1.254:2001");
+    identity.productionDateRegister = 9;
+    identity.serialNumberRegister = 10;
+
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    DeviceFactory factory(transport);
+    const std::shared_ptr<DeviceBase> device = factory.create(identity);
+    QVERIFY(device);
+
+    WorkflowRepository workflows;
+    QString error;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &error),
+        qPrintable(error));
+    WorkflowRunner runner(&workflows);
+    QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
+
+    ActionSpec productionDateAction;
+    productionDateAction.id = QStringLiteral("device.productionDate.update");
+    QVERIFY(runner.run(productionDateAction, {device},
+        QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 8, 25)}}));
+
+    ActionSpec serialNumberAction;
+    serialNumberAction.id = QStringLiteral("device.serialNumber.update");
+    QVERIFY(runner.run(serialNumberAction, {device},
+        QVariantMap{{QStringLiteral("serialNumber"), 11},
+            {QStringLiteral("factorySettingsKey"), QString()}}));
+
+    QCOMPARE(transport->resetCalls, 0);
+    QCOMPARE(transport->writes.size(), 0);
+    QCOMPARE(transport->noReplyWrites.size(), 0);
+    QCOMPARE(transport->waitForIdentityCalls, 0);
+
+    int skippedMessages = 0;
+    for (const QList<QVariant>& row : logSpy)
+    {
+        if (!row.isEmpty() && row.first().toString().contains(
+                QStringLiteral("factory settings key is empty")))
+            ++skippedMessages;
+    }
+    QCOMPARE(skippedMessages, 2);
+}
+
+void DeviceWorkbenchTest::workflowWorkerRunsDevicesInParallel()
+{
+    WorkflowRepository workflows;
+    QString error;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &error),
+        qPrintable(error));
+
+    DeviceIdentity firstIdentity;
+    firstIdentity.type = 0x1000;
+    firstIdentity.version = 0;
+    firstIdentity.applicationType = 0x0A02;
+    firstIdentity.applicationVersion = 1;
+    firstIdentity.state = QStringLiteral("bootloader");
+    firstIdentity.endpoint = QStringLiteral("192.168.1.254:2001");
+    firstIdentity.uuid = QStringLiteral("11111111-1111-1111-1111-111111111111");
+
+    DeviceIdentity secondIdentity = firstIdentity;
+    secondIdentity.endpoint = QStringLiteral("192.168.1.193:2001");
+    secondIdentity.uuid = QStringLiteral("22222222-2222-2222-2222-222222222222");
+
+    auto firstTransport = std::make_shared<FakeDeviceTransport>();
+    auto secondTransport = std::make_shared<FakeDeviceTransport>();
+    firstTransport->noReplyWriteDelayMs = 700;
+    secondTransport->noReplyWriteDelayMs = 700;
+    firstTransport->discoveredIdentity = firstIdentity;
+    secondTransport->discoveredIdentity = secondIdentity;
+    firstTransport->discoveredIdentity.type = firstIdentity.applicationType;
+    secondTransport->discoveredIdentity.type = secondIdentity.applicationType;
+    firstTransport->discoveredIdentity.version = firstIdentity.applicationVersion;
+    secondTransport->discoveredIdentity.version = secondIdentity.applicationVersion;
+    firstTransport->discoveredIdentity.state = QStringLiteral("application");
+    secondTransport->discoveredIdentity.state = QStringLiteral("application");
+
+    DeviceFactory firstFactory(firstTransport);
+    DeviceFactory secondFactory(secondTransport);
+    const std::shared_ptr<DeviceBase> firstDevice = firstFactory.create(firstIdentity);
+    const std::shared_ptr<DeviceBase> secondDevice = secondFactory.create(secondIdentity);
+    QVERIFY(firstDevice);
+    QVERIFY(secondDevice);
+
+    ActionSpec action;
+    action.id = QStringLiteral("device.application.load");
+    WorkflowWorker worker(&workflows, action, {firstDevice, secondDevice}, {});
+    QSignalSpy finishedSpy(&worker, &WorkflowWorker::finished);
+    QElapsedTimer timer;
+    timer.start();
+
+    worker.run();
+
+    QVERIFY2(timer.elapsed() < 1200,
+        qPrintable(QStringLiteral("Two 700 ms device operations took %1 ms").arg(timer.elapsed())));
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(finishedSpy.first().at(0).toBool());
+    QCOMPARE(firstTransport->noReplyWrites.size(), 1);
+    QCOMPARE(secondTransport->noReplyWrites.size(), 1);
 }
 
 void DeviceWorkbenchTest::catalogDetectsDeviceState()
@@ -804,7 +917,10 @@ void DeviceWorkbenchTest::workflowWritesSerialNumberRegisterInBootloader()
     QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
     WorkflowRunner runner(&workflows);
 
-    runner.run(action, {deviceObject}, QVariantMap{{QStringLiteral("serialNumber"), 915}});
+    runner.run(action, {deviceObject}, QVariantMap{
+        {QStringLiteral("serialNumber"), 915},
+        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
+    });
 
     QCOMPARE(transport->resetCalls, 0);
     QCOMPARE(transport->writes.size(), 2);
@@ -1692,62 +1808,6 @@ void DeviceWorkbenchTest::networkReadsDeviceDataBocV6()
     QCOMPARE(progress.first(), 0);
     QCOMPARE(progress.last(), 100);
 
-    const int jsonStart = extendedDescription.indexOf('{');
-    QJsonParseError parseError;
-    const QJsonDocument json = QJsonDocument::fromJson(
-        extendedDescription.mid(jsonStart), &parseError);
-    QVERIFY2(jsonStart >= 0 && parseError.error == QJsonParseError::NoError,
-        qPrintable(parseError.errorString()));
-    std::function<void(const QJsonValue&, const QString&)> logFactorySettings;
-    logFactorySettings = [&logFactorySettings](const QJsonValue& value, const QString& path) {
-        if (value.isObject())
-        {
-            const QJsonObject object = value.toObject();
-            for (auto it = object.constBegin(); it != object.constEnd(); ++it)
-            {
-                const QString childPath = path.isEmpty() ? it.key() : path + QLatin1Char('.') + it.key();
-                const QString key = it.key().toLower();
-                if (key.contains(QStringLiteral("factory"))
-                    || key.contains(QStringLiteral("paramint"))
-                    || key.contains(QStringLiteral("setting"))
-                    || key.contains(QStringLiteral("key"))
-                    || key.contains(QStringLiteral("unlock"))
-                    || key.contains(QStringLiteral("access"))
-                    || key.contains(QStringLiteral("password"))
-                    || key.contains(QString::fromUtf8("завод"))
-                    || key.contains(QString::fromUtf8("ключ"))
-                    || key.contains(QString::fromUtf8("настрой"))
-                    || key.contains(QString::fromUtf8("доступ")))
-                {
-                    QByteArray rendered;
-                    if (it.value().isObject())
-                        rendered = QJsonDocument(it.value().toObject()).toJson(QJsonDocument::Compact);
-                    else if (it.value().isArray())
-                        rendered = QJsonDocument(it.value().toArray()).toJson(QJsonDocument::Compact);
-                    else
-                        rendered = it.value().toVariant().toString().toUtf8();
-                    qInfo().noquote() << "FACTORY-SETTING-CANDIDATE" << childPath << '=' << rendered;
-                }
-                logFactorySettings(it.value(), childPath);
-            }
-        }
-        else if (value.isArray())
-        {
-            const QJsonArray array = value.toArray();
-            for (int i = 0; i < array.size(); ++i)
-                logFactorySettings(array.at(i), path + QStringLiteral("[%1]").arg(i));
-        }
-    };
-    logFactorySettings(json.object(), QString());
-
-    qint32 factorySettingsAllowed = 0;
-    QVERIFY2(transport->readRegister(identity, 7, &factorySettingsAllowed, &error), qPrintable(error));
-    qInfo() << "FACTORY-SETTINGS-ALLOWED int7 =" << factorySettingsAllowed;
-    qint32 factorySettingsKey = 0;
-    QVERIFY2(transport->readRegister(identity, 8, &factorySettingsKey, &error), qPrintable(error));
-    qInfo() << "FACTORY-SETTINGS-KEY int8 =" << factorySettingsKey
-            << QStringLiteral("(0x%1)").arg(quint32(factorySettingsKey), 8, 16, QLatin1Char('0'));
-
     quint16 type = 0;
     quint16 version = 0;
     QString description;
@@ -1788,9 +1848,13 @@ void DeviceWorkbenchTest::networkChangeSerialNumberBocV6()
         qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_SERIAL_EXPECTED")).trimmed();
     const QString targetText = QString::fromLocal8Bit(
         qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_SERIAL_TARGET")).trimmed();
+    const QString factorySettingsKey = QString::fromLocal8Bit(
+        qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_FACTORY_SETTINGS_KEY")).trimmed();
     const bool verifyOnly = qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_SERIAL_VERIFY_ONLY") == "1";
     if (endpoint.isEmpty() || expectedText.isEmpty() || targetText.isEmpty())
         QSKIP("Set endpoint, expected serial and target serial to run the destructive serial-number test");
+    if (!verifyOnly && factorySettingsKey.isEmpty())
+        QSKIP("Set DEVICE_WORKBENCH_NETWORK_BOCV6_FACTORY_SETTINGS_KEY for a protected write");
 
     bool expectedOk = false;
     bool targetOk = false;
@@ -1876,7 +1940,8 @@ void DeviceWorkbenchTest::networkChangeSerialNumberBocV6()
     });
 
     QVERIFY2(runner.run(action, {device}, QVariantMap{
-        {QStringLiteral("serialNumber"), targetSerial}
+        {QStringLiteral("serialNumber"), targetSerial},
+        {QStringLiteral("factorySettingsKey"), factorySettingsKey}
     }), "Serial-number workflow failed before identity refresh");
 
     DeviceIdentity refreshExpected = device->identity();

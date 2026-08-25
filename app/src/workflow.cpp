@@ -3,6 +3,27 @@
 
 #include <QCoreApplication>
 
+namespace
+{
+bool requiresFactorySettingsKey(const QString& actionId)
+{
+    return actionId == QStringLiteral("device.productionDate.update")
+        || actionId == QStringLiteral("device.serialNumber.update");
+}
+
+bool hasFactorySettingsKey(const QVariantMap& parameters)
+{
+    const auto key = parameters.constFind(QStringLiteral("factorySettingsKey"));
+    if (key == parameters.constEnd() || !key.value().isValid() || key.value().isNull())
+        return false;
+    if (key.value().type() == QVariant::String)
+        return !key.value().toString().trimmed().isEmpty();
+    if (key.value().type() == QVariant::ByteArray)
+        return !key.value().toByteArray().trimmed().isEmpty();
+    return true;
+}
+}
+
 WorkflowRunner::WorkflowRunner(WorkflowRepository* workflows, QObject* parent) :
     QObject(parent),
     mWorkflows(workflows)
@@ -17,6 +38,15 @@ void WorkflowRunner::setWorkflowRepository(WorkflowRepository* workflows)
 bool WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters)
 {
     emit logMessage(QStringLiteral("Starting %1 for %2 device(s)").arg(action.id).arg(devices.size()));
+
+    if (requiresFactorySettingsKey(action.id) && !hasFactorySettingsKey(parameters))
+    {
+        emit logMessage(QStringLiteral(
+            "Skipped %1 for %2 device(s): factory settings key is empty; protected settings were not changed")
+            .arg(action.id).arg(devices.size()));
+        emit progressChanged(100);
+        return true;
+    }
 
     QString currentOperation;
     QString currentStage;

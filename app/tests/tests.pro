@@ -12,6 +12,7 @@ SOURCES += \
     ../src/firmware_flash_strategy.cpp \
     ../src/devices/boc_v12_device.cpp \
     ../src/transport/unicorn_ascii_transport.cpp \
+    ../src/workers.cpp \
     ../src/workflow.cpp \
     ../src/workflow_definition.cpp
 
@@ -25,5 +26,6 @@ HEADERS += \
     ../src/devices/boc_v12_device.h \
     ../src/models.h \
     ../src/transport/unicorn_ascii_transport.h \
+    ../src/workers.h \
     ../src/workflow.h \
     ../src/workflow_definition.h

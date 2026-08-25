@@ -6,6 +6,8 @@ debug/device.o
 debug/firmware_flash_strategy.o
 debug/boc_v12_device.o
 debug/unicorn_ascii_transport.o
+debug/workers.o
 debug/workflow.o
 debug/workflow_definition.o
+debug/moc_workers.o
 debug/moc_workflow.o

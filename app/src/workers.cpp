@@ -4,9 +4,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QTimer>
 
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -138,72 +142,156 @@ WorkflowWorker::WorkflowWorker(WorkflowRepository* workflows,
 
 void WorkflowWorker::run()
 {
-    WorkflowRunner runner(mWorkflows);
-    QString failedOperation;
-    QString failedStage;
-    bool failureCaptured = false;
-    connect(&runner, &WorkflowRunner::logMessage, this, &WorkflowWorker::logMessage);
-    connect(&runner, &WorkflowRunner::transportLogMessage, this, &WorkflowWorker::transportLogMessage);
-    connect(&runner, &WorkflowRunner::progressChanged, this, [this](int percent) {
-        emit progressChanged(qBound(0, percent, kRunningProgressMaximum));
-    });
-    connect(&runner, &WorkflowRunner::stageChanged, this, &WorkflowWorker::stageChanged);
-    connect(&runner, &WorkflowRunner::failureStage, this,
-        [&failedOperation, &failedStage, &failureCaptured](const QString& operation, const QString& stage) {
-            if (!failureCaptured)
-            {
-                failureCaptured = true;
-                failedOperation = operation;
-                failedStage = stage;
-            }
-        });
-
-    const bool workflowSuccessful = runner.run(mAction, mDevices, mParameters);
-    bool refreshSuccessful = true;
-    QString refreshError;
-    emit stageChanged(QStringLiteral("device.refreshIdentity"), QStringLiteral("refresh identity"));
-    for (int deviceIndex = 0; deviceIndex < mDevices.size(); ++deviceIndex)
+    struct DeviceRunResult
     {
-        const std::shared_ptr<DeviceBase>& device = mDevices.at(deviceIndex);
+        bool workflowSuccessful = true;
+        bool refreshSuccessful = true;
+        bool failureCaptured = false;
+        QString failedOperation;
+        QString failedStage;
+        QString refreshError;
+        bool hasRefreshedIdentity = false;
+        DeviceIdentity refreshedIdentity;
+    };
+
+    const int deviceCount = mDevices.size();
+    int activeDeviceCount = 0;
+    for (const std::shared_ptr<DeviceBase>& device : mDevices)
+    {
+        if (device)
+            ++activeDeviceCount;
+    }
+
+    std::vector<DeviceRunResult> results(static_cast<size_t>(deviceCount));
+    std::vector<int> deviceProgress(static_cast<size_t>(deviceCount), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<size_t>(activeDeviceCount));
+    QMutex progressMutex;
+    QMutex signalMutex;
+
+    const auto emitLog = [this, &signalMutex](const QString& message) {
+        QMutexLocker locker(&signalMutex);
+        emit logMessage(message);
+    };
+    const auto emitTransportLog = [this, &signalMutex](const QString& message) {
+        QMutexLocker locker(&signalMutex);
+        emit transportLogMessage(message);
+    };
+    const auto emitStage = [this, &signalMutex](const QString& operation, const QString& stage) {
+        QMutexLocker locker(&signalMutex);
+        emit stageChanged(operation, stage);
+    };
+    const auto updateProgress = [this, &deviceProgress, &progressMutex, &signalMutex,
+                                    activeDeviceCount](int deviceIndex, int percent) {
+        int aggregate = 0;
+        {
+            QMutexLocker locker(&progressMutex);
+            deviceProgress.at(static_cast<size_t>(deviceIndex)) = qBound(0, percent, 100);
+            int sum = 0;
+            for (int value : deviceProgress)
+                sum += value;
+            if (activeDeviceCount > 0)
+                aggregate = sum / activeDeviceCount;
+        }
+        QMutexLocker signalLocker(&signalMutex);
+        emit progressChanged(qBound(0, aggregate, kRunningProgressMaximum));
+    };
+
+    for (int deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex)
+    {
+        const std::shared_ptr<DeviceBase> device = mDevices.at(deviceIndex);
         if (!device)
             continue;
 
-        DeviceIdentity expected = device->identity();
-        expected.type = 0;
-        expected.version = 0;
-        expected.serialNumber.clear();
-        expected.state.clear();
+        threads.emplace_back([this, device, deviceIndex, &results,
+                                 &emitLog, &emitTransportLog, &emitStage, &updateProgress]() {
+            DeviceRunResult& result = results.at(static_cast<size_t>(deviceIndex));
+            WorkflowRunner runner(mWorkflows);
+            connect(&runner, &WorkflowRunner::logMessage, &runner,
+                [&emitLog](const QString& message) { emitLog(message); }, Qt::DirectConnection);
+            connect(&runner, &WorkflowRunner::transportLogMessage, &runner,
+                [&emitTransportLog](const QString& message) { emitTransportLog(message); }, Qt::DirectConnection);
+            connect(&runner, &WorkflowRunner::progressChanged, &runner,
+                [&updateProgress, deviceIndex](int percent) { updateProgress(deviceIndex, percent); },
+                Qt::DirectConnection);
+            connect(&runner, &WorkflowRunner::stageChanged, &runner,
+                [&emitStage](const QString& operation, const QString& stage) {
+                    emitStage(operation, stage);
+                }, Qt::DirectConnection);
+            connect(&runner, &WorkflowRunner::failureStage, &runner,
+                [&result](const QString& operation, const QString& stage) {
+                    if (!result.failureCaptured)
+                    {
+                        result.failureCaptured = true;
+                        result.failedOperation = operation;
+                        result.failedStage = stage;
+                    }
+                }, Qt::DirectConnection);
 
-        DeviceIdentity refreshed;
-        QString error;
-        QString rawResponse;
-        if (!device->waitForDeviceIdentity(expected,
-                kIdentityRefreshTimeoutMs,
-                kIdentityRefreshPollIntervalMs,
-                &refreshed,
-                &error,
-                &rawResponse))
+            result.workflowSuccessful = runner.run(mAction, {device}, mParameters);
+
+            emitStage(QStringLiteral("device.refreshIdentity"), QStringLiteral("refresh identity"));
+            DeviceIdentity expected = device->identity();
+            expected.type = 0;
+            expected.version = 0;
+            expected.serialNumber.clear();
+            expected.state.clear();
+
+            QString error;
+            QString rawResponse;
+            if (!device->waitForDeviceIdentity(expected,
+                    kIdentityRefreshTimeoutMs,
+                    kIdentityRefreshPollIntervalMs,
+                    &result.refreshedIdentity,
+                    &error,
+                    &rawResponse))
+            {
+                result.refreshSuccessful = false;
+                result.refreshError = error;
+                emitLog(QStringLiteral("[%1] refresh identity failed: %2")
+                    .arg(device->identity().typeHex(), error));
+            }
+            else
+            {
+                // The direct TCP fallback may not return a serial number.
+                // Preserve the known value, including one written by this workflow.
+                if (result.refreshedIdentity.serialNumber.trimmed().isEmpty())
+                    result.refreshedIdentity.serialNumber = device->identity().serialNumber;
+                result.hasRefreshedIdentity = true;
+                emitLog(QStringLiteral("[%1] device identity refreshed")
+                    .arg(result.refreshedIdentity.typeHex()));
+            }
+            if (!rawResponse.isEmpty())
+                emitTransportLog(QStringLiteral("[%1] %2")
+                    .arg(device->identity().typeHex(), rawResponse));
+            updateProgress(deviceIndex, 100);
+        });
+    }
+
+    for (std::thread& thread : threads)
+        thread.join();
+
+    bool workflowSuccessful = true;
+    bool refreshSuccessful = true;
+    QString failedOperation;
+    QString failedStage;
+    QString refreshError;
+    for (int deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex)
+    {
+        const DeviceRunResult& result = results.at(static_cast<size_t>(deviceIndex));
+        if (!mDevices.at(deviceIndex))
+            continue;
+        if (!result.workflowSuccessful && workflowSuccessful)
         {
-            refreshSuccessful = false;
-            if (refreshError.isEmpty())
-                refreshError = error;
-            emit logMessage(QStringLiteral("[%1] refresh identity failed: %2")
-                .arg(device->identity().typeHex(), error));
+            failedOperation = result.failedOperation;
+            failedStage = result.failedStage;
         }
-        else
-        {
-            // The transport's direct TCP fallback can identify the device by
-            // type and UUID but has no serial field. Do not erase the known
-            // serial (including a number just written by this workflow).
-            if (refreshed.serialNumber.trimmed().isEmpty())
-                refreshed.serialNumber = device->identity().serialNumber;
-            emit identityRefreshed(deviceIndex, refreshed);
-            emit logMessage(QStringLiteral("[%1] device identity refreshed")
-                .arg(refreshed.typeHex()));
-        }
-        if (!rawResponse.isEmpty())
-            emit transportLogMessage(QStringLiteral("[%1] %2")
-                .arg(device->identity().typeHex(), rawResponse));
+        workflowSuccessful = result.workflowSuccessful && workflowSuccessful;
+        if (!result.refreshSuccessful && refreshSuccessful)
+            refreshError = result.refreshError;
+        refreshSuccessful = result.refreshSuccessful && refreshSuccessful;
+        if (result.hasRefreshedIdentity)
+            emit identityRefreshed(deviceIndex, result.refreshedIdentity);
     }
 
     const bool successful = workflowSuccessful && refreshSuccessful;

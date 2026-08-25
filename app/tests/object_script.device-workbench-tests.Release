@@ -6,6 +6,8 @@ release/device.o
 release/firmware_flash_strategy.o
 release/boc_v12_device.o
 release/unicorn_ascii_transport.o
+release/workers.o
 release/workflow.o
 release/workflow_definition.o
+release/moc_workers.o
 release/moc_workflow.o
