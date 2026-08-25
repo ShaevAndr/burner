@@ -488,22 +488,27 @@ bool sendRequest(const DeviceIdentity& device, const QByteArray& request, const 
         *rawResponse = QStringLiteral("%1\nRX %2").arg(*rawResponse, escapedPacketText(response));
 
     QByteArray packetBuffer = response;
+    QString packetError;
     while (!packetBuffer.isEmpty())
     {
         QByteArray packet;
-        if (!takeAsciiPacket(packetBuffer, &packet, error))
+        if (!takeAsciiPacket(packetBuffer, &packet, &packetError))
         {
             if (packetBuffer.indexOf('\r') >= 0)
                 continue;
+            if (error)
+                *error = packetError;
             return false;
         }
 
-        if (acceptPacket(packet, device, expectedCommands, responseBody, error))
+        if (acceptPacket(packet, device, expectedCommands, responseBody, &packetError))
             return true;
     }
 
     if (error)
-        *error = QStringLiteral("No valid ASCII packet received");
+        *error = packetError.isEmpty()
+            ? QStringLiteral("No valid ASCII packet received")
+            : packetError;
     return false;
 }
 

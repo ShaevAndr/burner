@@ -259,6 +259,7 @@ bool WorkflowExecution::next(DeviceBase& device)
         || (!isRuntimeStep(step.op) && !executeDeviceStep(device, step)))
     {
         mSuccessful = false;
+        restoreApplicationAfterFailure(device);
         mFinished = true;
         return false;
     }
@@ -391,7 +392,8 @@ bool WorkflowExecution::runOperationWithRetry(const DeviceIdentity& identity,
 
         const bool retryable = mContext.transportError.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)
             || mContext.transportError.contains(QStringLiteral("timeout"), Qt::CaseInsensitive)
-            || mContext.transportError.contains(QStringLiteral("not ready"), Qt::CaseInsensitive);
+            || mContext.transportError.contains(QStringLiteral("not ready"), Qt::CaseInsensitive)
+            || mContext.transportError.contains(QStringLiteral("Device returned ASCII error"), Qt::CaseInsensitive);
         if (!retryable || attempt == attempts)
             break;
 
@@ -402,6 +404,61 @@ bool WorkflowExecution::runOperationWithRetry(const DeviceIdentity& identity,
         sleepWithEvents(500);
     }
     return false;
+}
+
+void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
+{
+    if (!mContext.applicationLoadingDisabled
+        || (mAction.id != QStringLiteral("device.productionDate.update")
+            && mAction.id != QStringLiteral("device.serialNumber.update")))
+        return;
+
+    const DeviceIdentity identity = device.identity();
+    log(QStringLiteral("[%1] operation failed in bootloader; restoring main application")
+        .arg(identity.typeHex()));
+
+    QString loadError;
+    QString loadRaw;
+    if (!device.loadApplicationNoReply(&loadError, &loadRaw))
+    {
+        log(QStringLiteral("[%1] recovery load command failed: %2; checking application state")
+            .arg(identity.typeHex(), loadError));
+    }
+    if (!loadRaw.isEmpty())
+        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), loadRaw));
+
+    DeviceIdentity expected = identity;
+    expected.type = identity.applicationType;
+    expected.version = identity.applicationVersion;
+    expected.state = QStringLiteral("application");
+    DeviceIdentity found;
+    QString waitError;
+    QString waitRaw;
+    if (!device.waitForDeviceIdentity(expected, 30000, 500, &found, &waitError, &waitRaw))
+    {
+        if (!waitRaw.isEmpty())
+            transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), waitRaw));
+        log(QStringLiteral("[%1] main application recovery failed: %2")
+            .arg(identity.typeHex(), waitError));
+        return;
+    }
+    if (!waitRaw.isEmpty())
+        transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), waitRaw));
+
+    DeviceIdentity updated = identity;
+    updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
+    updated.endpoint = found.endpoint;
+    updated.modbusAddress = found.modbusAddress;
+    updated.type = found.type;
+    updated.version = found.version;
+    updated.description = found.description;
+    if (!found.serialNumber.trimmed().isEmpty())
+        updated.serialNumber = found.serialNumber;
+    updated.state = QStringLiteral("application");
+    device.updateIdentity(updated);
+    mContext.applicationLoadingDisabled = false;
+    log(QStringLiteral("[%1] main application restored after failed operation")
+        .arg(updated.typeHex()));
 }
 
 bool WorkflowExecution::isRuntimeStep(const QString& operation) const
@@ -439,6 +496,8 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 
     if (step.op == QStringLiteral("context.productionDate"))
     {
+        if (identity.isBootloader())
+            mContext.applicationLoadingDisabled = true;
         const QDate productionDate = mParameters.value(QStringLiteral("productionDate")).toDate();
         const QDate effectiveDate = productionDate.isValid() ? productionDate : QDate::currentDate();
         mContext.productionTimestamp = QDateTime(effectiveDate, QTime(0, 0), Qt::LocalTime).toSecsSinceEpoch();
@@ -449,6 +508,8 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 
     if (step.op == QStringLiteral("context.serialNumber"))
     {
+        if (identity.isBootloader())
+            mContext.applicationLoadingDisabled = true;
         bool serialOk = false;
         mContext.serialNumber = mParameters.value(QStringLiteral("serialNumber")).toInt(&serialOk);
         if (!serialOk || mContext.serialNumber < 0)
@@ -817,6 +878,20 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
             {
                 if (!raw.isEmpty())
                     transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+
+                const DeviceIdentity found = mContext.reappearedIdentity;
+                DeviceIdentity updated = identity;
+                updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
+                updated.endpoint = found.endpoint;
+                updated.modbusAddress = found.modbusAddress;
+                updated.type = found.type;
+                updated.version = found.version;
+                updated.description = found.description;
+                if (!found.serialNumber.trimmed().isEmpty())
+                    updated.serialNumber = found.serialNumber;
+                updated.state = QStringLiteral("application");
+                device.updateIdentity(updated);
+                mContext.applicationLoadingDisabled = false;
                 return true;
             }
             if (!raw.isEmpty())
@@ -1101,6 +1176,16 @@ bool WorkflowExecution::executeDeviceStep(DeviceBase& device, const WorkflowStep
         DeviceIdentity updated = device.identity();
         updated.serialNumber = QString::number(arguments.value(QStringLiteral("value")).toInt());
         device.updateIdentity(updated);
+    }
+    else if (step.op == QStringLiteral("device.reset")
+        && (mAction.id == QStringLiteral("device.productionDate.update")
+            || mAction.id == QStringLiteral("device.serialNumber.update")))
+    {
+        mContext.applicationLoadingDisabled = true;
+    }
+    else if (step.op == QStringLiteral("device.disableLoadApplication"))
+    {
+        mContext.applicationLoadingDisabled = true;
     }
 
     return true;

@@ -7,6 +7,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -43,6 +47,16 @@ public:
 
     bool writeRegister(const DeviceIdentity&, quint16 index, qint32 value, QString* error, QString* rawResponse = nullptr) override
     {
+        ++writeAttempts;
+        const QString configuredError = writeErrorsByAttempt.value(writeAttempts);
+        if (!configuredError.isEmpty())
+        {
+            if (error)
+                *error = configuredError;
+            if (rawResponse)
+                *rawResponse = QStringLiteral("TX :01E2...\\r\nRX ?01E20B89\\r");
+            return false;
+        }
         if (failWrites)
         {
             if (error)
@@ -149,11 +163,13 @@ public:
     QVector<bool> waitForIdentityResults;
     QVector<DeviceIdentity> waitExpectedIdentities;
     int resetCalls = 0;
+    int writeAttempts = 0;
     int waitForIdentityCalls = 0;
     int uuidReadCalls = 0;
     QString uuidValue = QStringLiteral("410FC241-3431-384D-1235-36353133584F");
     bool failWrites = false;
     bool waitForIdentityResult = true;
+    QHash<int, QString> writeErrorsByAttempt;
 };
 
 class TransportReadThread : public QThread
@@ -174,6 +190,22 @@ protected:
         timer.start();
         ok = transport->readRegister(identity, 0, &value, &error, &raw);
         elapsedMs = timer.elapsed();
+    }
+};
+
+class TransportWriteThread : public QThread
+{
+public:
+    DeviceIdentity identity;
+    std::shared_ptr<IDeviceTransport> transport;
+    bool ok = false;
+    QString error;
+    QString raw;
+
+protected:
+    void run() override
+    {
+        ok = transport->writeRegister(identity, 9, 123, &error, &raw);
     }
 };
 
@@ -276,6 +308,7 @@ private slots:
     void workflowEmitsProgressForTestFlash();
     void workflowEmitsProductionDateSequence();
     void workflowWritesProductionDateRegistersInOrder();
+    void workflowRestoresApplicationAfterProductionDateFailure();
     void catalogDetectsDeviceState();
     void workflowWritesSerialNumberRegisterInBootloader();
     void applicationLoadActionIsAvailableForBootloader();
@@ -293,6 +326,7 @@ private slots:
     void deviceBaseWritesConfiguredServiceRegisters();
     void deviceReadIntDelegatesToTransport();
     void unicornAsciiReadRegisterReturnsAfterFirstValidResponse();
+    void unicornAsciiPreservesDeviceErrorResponse();
     void unicornAsciiReadsUuid();
     void unicornAsciiReadsFullIdentityDescription();
     void unicornAsciiReadsExtendedDescription();
@@ -635,6 +669,7 @@ void DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
     action.title = QStringLiteral("Обновить дату производства");
 
     auto transport = std::make_shared<FakeDeviceTransport>();
+    transport->writeErrorsByAttempt.insert(2, QStringLiteral("Device returned ASCII error 0x0b"));
     DeviceFactory factory(transport);
     auto deviceObject = factory.create(device);
     QVERIFY(deviceObject);
@@ -644,9 +679,11 @@ void DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
     QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
     WorkflowRunner runner(&workflows);
 
-    runner.run(action, {deviceObject}, QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 7, 16)}});
+    QVERIFY(runner.run(action, {deviceObject},
+        QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 7, 16)}}));
 
     QCOMPARE(transport->writes.size(), 2);
+    QCOMPARE(transport->writeAttempts, 3);
     QCOMPARE(transport->resetCalls, 1);
     QCOMPARE(transport->writes.at(0).index, quint16(0));
     QCOMPARE(transport->writes.at(0).value, qint32(0));
@@ -655,6 +692,60 @@ void DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
     QCOMPARE(transport->noReplyWrites.size(), 1);
     QCOMPARE(transport->noReplyWrites.first().index, quint16(0));
     QCOMPARE(transport->noReplyWrites.first().value, qint32(1));
+}
+
+void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure()
+{
+    DeviceIdentity device;
+    device.id = QStringLiteral("boc.v6");
+    device.type = 0x0A02;
+    device.version = 0x0001;
+    device.applicationType = 0x0A02;
+    device.applicationVersion = 0x0001;
+    device.known = true;
+    device.catalogId = QStringLiteral("boc.v6");
+    device.name = QStringLiteral("БОЦ-В-6");
+    device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6)");
+    device.endpoint = QStringLiteral("192.168.1.254:2001");
+    device.modbusAddress = 1;
+    device.productionDateRegister = 9;
+
+    ActionSpec action;
+    action.id = QStringLiteral("device.productionDate.update");
+    action.title = QStringLiteral("Обновить дату производства");
+
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    for (int attempt = 2; attempt <= 5; ++attempt)
+        transport->writeErrorsByAttempt.insert(attempt, QStringLiteral("Device returned ASCII error 0x0b"));
+    transport->discoveredIdentity = device;
+    transport->discoveredIdentity.state = QStringLiteral("application");
+
+    DeviceFactory factory(transport);
+    const auto deviceObject = factory.create(device);
+    QVERIFY(deviceObject);
+
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError),
+        qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
+    QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
+
+    QVERIFY(!runner.run(action, {deviceObject},
+        QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 8, 25)}}));
+    QCOMPARE(transport->writeAttempts, 5);
+    QCOMPARE(transport->noReplyWrites.size(), 1);
+    QCOMPARE(transport->noReplyWrites.first().value, qint32(1));
+    QCOMPARE(transport->waitForIdentityCalls, 1);
+    QCOMPARE(deviceObject->identity().state, QStringLiteral("application"));
+
+    bool sawRecovery = false;
+    for (const QList<QVariant>& row : logSpy)
+    {
+        if (!row.isEmpty() && row.first().toString().contains(QStringLiteral("main application restored")))
+            sawRecovery = true;
+    }
+    QVERIFY2(sawRecovery, "Failed service-data update must restore the main application");
 }
 
 void DeviceWorkbenchTest::catalogDetectsDeviceState()
@@ -801,25 +892,24 @@ void DeviceWorkbenchTest::workflowLoadsApplicationFromBootloaderWithoutWaitingFo
     WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
 
-    runner.run(action, {deviceObject});
+    QVERIFY(runner.run(action, {deviceObject}));
 
     QCOMPARE(transport->writes.size(), 0);
-    QCOMPARE(transport->noReplyWrites.size(), 2);
+    QCOMPARE(transport->noReplyWrites.size(), 1);
     QCOMPARE(transport->noReplyWrites.at(0).index, quint16(0));
     QCOMPARE(transport->noReplyWrites.at(0).value, qint32(1));
-    QCOMPARE(transport->noReplyWrites.at(1).index, quint16(0));
-    QCOMPARE(transport->noReplyWrites.at(1).value, qint32(1));
+    QCOMPARE(transport->waitForIdentityCalls, 1);
 
-    bool sawRetryLog = false;
+    bool sawFinishedLog = false;
     for (const QList<QVariant>& row : logSpy)
     {
-        if (!row.isEmpty() && row.at(0).toString().contains(QStringLiteral("retry"), Qt::CaseInsensitive))
+        if (!row.isEmpty() && row.at(0).toString().contains(QStringLiteral("workflow finished")))
         {
-            sawRetryLog = true;
+            sawFinishedLog = true;
             break;
         }
     }
-    QVERIFY2(sawRetryLog, "Workflow should log the second application load attempt");
+    QVERIFY2(sawFinishedLog, "Workflow must finish after application identity is confirmed");
 }
 
 void DeviceWorkbenchTest::workflowWritesApplicationFlashPagesFromBootloader()
@@ -1446,6 +1536,38 @@ void DeviceWorkbenchTest::unicornAsciiReadRegisterReturnsAfterFirstValidResponse
     QVERIFY2(thread.elapsedMs < 1000, qPrintable(QStringLiteral("Read took %1 ms").arg(thread.elapsedMs)));
 }
 
+void DeviceWorkbenchTest::unicornAsciiPreservesDeviceErrorResponse()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    DeviceIdentity identity;
+    identity.modbusAddress = 1;
+    identity.endpoint = QStringLiteral("127.0.0.1:%1").arg(server.serverPort());
+
+    TransportWriteThread thread;
+    thread.identity = identity;
+    thread.transport = createUnicornAsciiTransport();
+    thread.start();
+
+    QVERIFY2(server.waitForNewConnection(1000), "Expected write transport connection");
+    QTcpSocket* client = server.nextPendingConnection();
+    QVERIFY(client);
+    QVERIFY2(client->waitForReadyRead(1000), "Expected WriteInt request");
+    const QByteArray request = client->readAll();
+    QVERIFY(request.startsWith(":01E2"));
+    QVERIFY(request.endsWith('\r'));
+
+    const QByteArray response("?01E20B89\r");
+    QCOMPARE(client->write(response), qint64(response.size()));
+    QVERIFY(client->waitForBytesWritten(1000));
+
+    QVERIFY2(thread.wait(4000), "Transport write did not finish");
+    QVERIFY(!thread.ok);
+    QCOMPARE(thread.error, QStringLiteral("Device returned ASCII error 0x0b"));
+    QVERIFY(thread.raw.contains(QStringLiteral("RX ?01E20B89")));
+}
+
 void DeviceWorkbenchTest::unicornAsciiReadsUuid()
 {
     QTcpServer server;
@@ -1569,6 +1691,62 @@ void DeviceWorkbenchTest::networkReadsDeviceDataBocV6()
     QVERIFY(!progress.isEmpty());
     QCOMPARE(progress.first(), 0);
     QCOMPARE(progress.last(), 100);
+
+    const int jsonStart = extendedDescription.indexOf('{');
+    QJsonParseError parseError;
+    const QJsonDocument json = QJsonDocument::fromJson(
+        extendedDescription.mid(jsonStart), &parseError);
+    QVERIFY2(jsonStart >= 0 && parseError.error == QJsonParseError::NoError,
+        qPrintable(parseError.errorString()));
+    std::function<void(const QJsonValue&, const QString&)> logFactorySettings;
+    logFactorySettings = [&logFactorySettings](const QJsonValue& value, const QString& path) {
+        if (value.isObject())
+        {
+            const QJsonObject object = value.toObject();
+            for (auto it = object.constBegin(); it != object.constEnd(); ++it)
+            {
+                const QString childPath = path.isEmpty() ? it.key() : path + QLatin1Char('.') + it.key();
+                const QString key = it.key().toLower();
+                if (key.contains(QStringLiteral("factory"))
+                    || key.contains(QStringLiteral("paramint"))
+                    || key.contains(QStringLiteral("setting"))
+                    || key.contains(QStringLiteral("key"))
+                    || key.contains(QStringLiteral("unlock"))
+                    || key.contains(QStringLiteral("access"))
+                    || key.contains(QStringLiteral("password"))
+                    || key.contains(QString::fromUtf8("завод"))
+                    || key.contains(QString::fromUtf8("ключ"))
+                    || key.contains(QString::fromUtf8("настрой"))
+                    || key.contains(QString::fromUtf8("доступ")))
+                {
+                    QByteArray rendered;
+                    if (it.value().isObject())
+                        rendered = QJsonDocument(it.value().toObject()).toJson(QJsonDocument::Compact);
+                    else if (it.value().isArray())
+                        rendered = QJsonDocument(it.value().toArray()).toJson(QJsonDocument::Compact);
+                    else
+                        rendered = it.value().toVariant().toString().toUtf8();
+                    qInfo().noquote() << "FACTORY-SETTING-CANDIDATE" << childPath << '=' << rendered;
+                }
+                logFactorySettings(it.value(), childPath);
+            }
+        }
+        else if (value.isArray())
+        {
+            const QJsonArray array = value.toArray();
+            for (int i = 0; i < array.size(); ++i)
+                logFactorySettings(array.at(i), path + QStringLiteral("[%1]").arg(i));
+        }
+    };
+    logFactorySettings(json.object(), QString());
+
+    qint32 factorySettingsAllowed = 0;
+    QVERIFY2(transport->readRegister(identity, 7, &factorySettingsAllowed, &error), qPrintable(error));
+    qInfo() << "FACTORY-SETTINGS-ALLOWED int7 =" << factorySettingsAllowed;
+    qint32 factorySettingsKey = 0;
+    QVERIFY2(transport->readRegister(identity, 8, &factorySettingsKey, &error), qPrintable(error));
+    qInfo() << "FACTORY-SETTINGS-KEY int8 =" << factorySettingsKey
+            << QStringLiteral("(0x%1)").arg(quint32(factorySettingsKey), 8, 16, QLatin1Char('0'));
 
     quint16 type = 0;
     quint16 version = 0;

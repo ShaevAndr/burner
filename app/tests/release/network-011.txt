@@ -1,0 +1,28 @@
+********* Start testing of DeviceWorkbenchTest *********
+Config: Using QtTest library 5.12.12, Qt 5.12.12 (x86_64-little_endian-llp64 shared (dynamic) release build; by GCC 7.3.0)
+INFO   : DeviceWorkbenchTest::initTestCase() entering
+PASS   : DeviceWorkbenchTest::initTestCase()
+INFO   : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() entering
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt = [{"Access":"rw","ID":"EnableLoadApp","Name":"Enable load application","Num":0,"Type":"Bool"},{"Access":"ro","ID":"MACAddrUpperThreeBytes","Name":"MAC address upper three bytes","Num":1,"Type":"halfmac"},{"Access":"ro","ID":"MACAddrLowThreeBytes","Name":"MAC address low three bytes","Num":2,"Type":"halfmac"},{"Access":"ro","Desc":"","FormatStr":"%d","ID":"TotalOperatingTime","Name":"Total operating time","Num":3,"Type":"Regular","Unit":"hours"},{"Access":"ro","Desc":"","FormatStr":"%d","ID":"NumberOfBootloaderLaunches","Name":"Number of bootloader launches","Num":4,"Type":"Regular"},{"Access":"ro","Desc":"","FormatStr":"%d","ID":"NumberOfApplicationLaunches","Name":"Number of application launches","Num":5,"Type":"Regular"},{"Access":"ro","FormatStr":"%d","ID":"NumberErrorWriteDeviceUsStat","Name":"Number error write device us stat","Num":6,"Type":"Regular"},{"Access":"ro","Desc":"","ID":"IPFactorySettingsLock","Name":"Factory settings change allowed","Num":7,"Type":"Bool"},{"Access":"rw","Desc":"","FormatStr":"0x%08X","ID":"IPFactorySettingsKey","Name":"Factory settings key","Num":8,"Type":"Regular"},{"Access":"rw","FormatStr":"%T","ID":"DeviceDateOfManufacture","Name":"DeviceDateOfManufacture","Num":9,"Type":"Regular"},{"Access":"rw","FormatStr":"%d","ID":"DeviceSerialNumber","Name":"DeviceSerialNumber","Num":10,"Type":"Regular"},{"Access":"ro","Desc":"","Enum":{"ID":"Enum_IPEthLinkStatus","Values":[{"Desc":"Нет линка","Name":"NoLink","Value":0},{"Desc":"10 МБит полудуплекс","Name":"10MB_HD","Value":1},{"Desc":"10 МБит полный дуплекс","Name":"10MB_FD","Value":3},{"Desc":"100 МБит полудуплекс","Name":"100MB_HD","Value":5},{"Desc":"100 МБит полный дуплекс","Name":"100MB_FD","Value":7}]},"FormatStr":"%d","ID":"IPEthLinkStatus","Name":"Статус Ethrenet линка","Num":11,"Type":"Enum"}]
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[0].Access = rw
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[1].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[2].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[3].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[4].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[5].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[6].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[7].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[8].Access = rw
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[9].Access = rw
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[10].Access = rw
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTING-CANDIDATE ParamInt[11].Access = ro
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTINGS-ALLOWED int7 = 0
+QINFO  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() FACTORY-SETTINGS-KEY int8 = 0 "(0x00000000)"
+FAIL!  : DeviceWorkbenchTest::networkReadsDeviceDataBocV6() Compared values are not the same
+   Actual   (type)           : 4096
+   Expected (quint16(0x0A02)): 2562
+tst_device_workbench.cpp(1756) : failure location
+INFO   : DeviceWorkbenchTest::cleanupTestCase() entering
+PASS   : DeviceWorkbenchTest::cleanupTestCase()
+Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 65ms
+********* Finished testing of DeviceWorkbenchTest *********

@@ -50,6 +50,7 @@ struct WorkflowContext
     bool hasPreservedSerialNumber = false;
     bool transitionValidated = false;
     bool flashWritten = false;
+    bool applicationLoadingDisabled = false;
     QString transportError;
     QString transportRaw;
 };
@@ -88,6 +89,7 @@ private:
     void emitTransportLog(const DeviceIdentity& identity);
     bool ensureDeviceUuid(DeviceBase& device);
     bool disableApplicationLoading(DeviceBase& device);
+    void restoreApplicationAfterFailure(DeviceBase& device);
     bool runOperationWithRetry(const DeviceIdentity& identity,
         const WorkflowStep& step,
         const DeviceOperation& operation,

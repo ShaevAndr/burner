@@ -133,39 +133,15 @@
       "steps": [
         {
           "op": "device.loadApplicationNoReply",
-          "label": "load application attempt 1",
+          "label": "load application",
           "message": "int[0] = 1, response is not expected"
         },
         {
-          "op": "sleep",
-          "message": "wait 3 seconds before reconnecting to application",
-          "ms": 3000
-        },
-        {
-          "op": "device.connect",
-          "state": "application",
-          "message": "reconnect to main application",
-          "settleMs": 0
-        },
-        {
-          "op": "log",
-          "message": "still in bootloader, retry load application"
-        },
-        {
-          "op": "device.loadApplicationNoReply",
-          "label": "load application attempt 2",
-          "message": "int[0] = 1, response is not expected"
-        },
-        {
-          "op": "sleep",
-          "message": "wait 3 seconds before reconnecting to application",
-          "ms": 3000
-        },
-        {
-          "op": "device.connect",
-          "state": "application",
-          "message": "reconnect to main application",
-          "settleMs": 0
+          "op": "device.waitForApplication",
+          "timeoutMs": 30000,
+          "pollIntervalMs": 500,
+          "retryLoadAttempts": 1,
+          "retryDelayMs": 1000
         },
         {
           "op": "log",
