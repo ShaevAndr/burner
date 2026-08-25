@@ -1,6 +1,7 @@
 #ifndef DEVICE_WORKBENCH_MODELS_H
 #define DEVICE_WORKBENCH_MODELS_H
 
+#include <QByteArray>
 #include <QHash>
 #include <QMetaType>
 #include <QString>
@@ -77,6 +78,7 @@ struct DeviceIdentity
     quint16 type = 0;
     quint16 version = 0;
     QString description;
+    QByteArray descriptionJson;
     QString state = QStringLiteral("application");
 
     QString catalogId;
@@ -145,6 +147,21 @@ struct DeviceIdentity
                 return &transition;
         }
         return nullptr;
+    }
+
+    bool isFirmwareTargetAllowed(const QString& targetFirmwareId) const
+    {
+        if (!firmwareVersionById(targetFirmwareId))
+            return false;
+
+        // When the device itself is known but its installed firmware cannot be
+        // detected, there is no reliable "from" node for the transition graph.
+        // In that case every firmware declared for this device is available.
+        if (known && currentFirmwareId.isEmpty())
+            return true;
+
+        const FirmwareTransitionSpec* transition = transitionTo(targetFirmwareId);
+        return transition && transition->enabled;
     }
 };
 

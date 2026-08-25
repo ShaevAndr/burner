@@ -6,7 +6,9 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -21,8 +23,10 @@
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QThread>
+#include <QTextStream>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 
 enum DiscoveryColumns
@@ -135,12 +139,10 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
     const DeviceIdentity& firstIdentity = devices.first()->identity();
     if (target == QStringLiteral("application") && !firstIdentity.firmwareVersions.isEmpty())
     {
-        for (const FirmwareTransitionSpec& transition : firstIdentity.firmwareTransitions)
+        for (const FirmwareVersionSpec& targetFirmware : firstIdentity.firmwareVersions)
         {
-            if (!transition.enabled || transition.from != firstIdentity.currentFirmwareId)
-                continue;
-            const FirmwareVersionSpec* targetFirmware = firstIdentity.firmwareVersionById(transition.to);
-            if (!targetFirmware || targetFirmware->artifact.target != target)
+            if (targetFirmware.artifact.target != target
+                || !firstIdentity.isFirmwareTargetAllowed(targetFirmware.id))
                 continue;
 
             bool availableForAll = true;
@@ -151,15 +153,17 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
                     availableForAll = false;
                     break;
                 }
-                const FirmwareTransitionSpec* deviceTransition = device->identity().transitionTo(transition.to);
-                if (!deviceTransition || !deviceTransition->enabled)
+                const DeviceIdentity& identity = device->identity();
+                const FirmwareVersionSpec* deviceTarget = identity.firmwareVersionById(targetFirmware.id);
+                if (!deviceTarget || deviceTarget->artifact.target != target
+                    || !identity.isFirmwareTargetAllowed(targetFirmware.id))
                 {
                     availableForAll = false;
                     break;
                 }
             }
             if (availableForAll)
-                artifacts.append(targetFirmware->artifact);
+                artifacts.append(targetFirmware.artifact);
         }
         return artifacts;
     }
@@ -253,6 +257,8 @@ MainWindow::MainWindow(ServiceContainer* services, QWidget* parent) :
     connect(&mServices->workflow(), &WorkflowRunner::logMessage, this, &MainWindow::appendLog);
     connect(&mServices->workflow(), &WorkflowRunner::transportLogMessage, this, &MainWindow::appendTransportLog);
     connect(&mServices->workflow(), &WorkflowRunner::progressChanged, this, &MainWindow::onWorkflowProgress);
+
+    appendLog(QStringLiteral("Приложение запущено. Файл журнала: %1").arg(logFilePath()));
 }
 
 MainWindow::~MainWindow()
@@ -263,8 +269,8 @@ MainWindow::~MainWindow()
         mWorkflowThread->wait(5000);
     }
 
-    const QSet<QThread*> uuidThreads = mUuidThreads;
-    for (QThread* thread : uuidThreads)
+    const QSet<QThread*> deviceDataThreads = mDeviceDataThreads;
+    for (QThread* thread : deviceDataThreads)
     {
         if (!thread || !thread->isRunning())
             continue;
@@ -602,12 +608,25 @@ QWidget* MainWindow::buildDiscoveryTablePanel()
     filterLayout->setContentsMargins(14, 12, 14, 12);
     filterLayout->addWidget(new QLabel(QStringLiteral("<b>Устройства текущего поиска</b>")));
     filterLayout->addStretch();
+    mDeviceDataProgressLabel = new QLabel(QStringLiteral("Получение данных"));
+    mDeviceDataProgressLabel->setObjectName(QStringLiteral("subtitle"));
+    mDeviceDataProgressLabel->setMinimumWidth(260);
+    mDeviceDataProgressLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    mDeviceDataProgressBar = new QProgressBar;
+    mDeviceDataProgressBar->setRange(0, 100);
+    mDeviceDataProgressBar->setValue(0);
+    mDeviceDataProgressBar->setFixedWidth(210);
+    mDeviceDataProgressBar->setFormat(QStringLiteral("%p%"));
+    mDeviceDataProgressLabel->setVisible(false);
+    mDeviceDataProgressBar->setVisible(false);
+    filterLayout->addWidget(mDeviceDataProgressLabel);
+    filterLayout->addWidget(mDeviceDataProgressBar);
     layout->addWidget(filter);
 
     mDiscoveryTable = new QTableWidget(0, DiscoveryColumnCount);
     mDiscoveryTable->setHorizontalHeaderLabels({
         QStringLiteral("Device"), QStringLiteral("Number"), QStringLiteral("Address"),
-        QStringLiteral("Channel"), QStringLiteral("State"), QStringLiteral("Ping")
+        QStringLiteral("Channel"), QStringLiteral("State"), QStringLiteral("Actions")
     });
     mDiscoveryTable->verticalHeader()->setVisible(false);
     mDiscoveryTable->verticalHeader()->setMinimumSectionSize(54);
@@ -756,6 +775,9 @@ QWidget* MainWindow::buildSerialNumberTablePanel()
 void MainWindow::startDiscovery()
 {
     ++mDiscoveryGeneration;
+    mDeviceDataEndpoints.clear();
+    mDeviceDataTotal = 0;
+    mDeviceDataCompleted = 0;
     mDevices.clear();
     mDiscoveryTable->setRowCount(0);
     mFirmwareTable->setRowCount(0);
@@ -763,6 +785,16 @@ void MainWindow::startDiscovery()
     mSerialNumberTable->setRowCount(0);
     updateBulkMenu();
     setBusy(true);
+    if (mDeviceDataProgressLabel)
+    {
+        mDeviceDataProgressLabel->setText(QStringLiteral("Поиск устройств"));
+        mDeviceDataProgressLabel->setVisible(true);
+    }
+    if (mDeviceDataProgressBar)
+    {
+        mDeviceDataProgressBar->setValue(0);
+        mDeviceDataProgressBar->setVisible(true);
+    }
 
     DiscoverySettings settings;
     settings.lineMode = mLineMode->currentData().toString();
@@ -797,77 +829,80 @@ void MainWindow::onDeviceFound(DeviceIdentity device)
     if (!deviceObject)
         return;
 
+    // Show the discovery result immediately. Full description, JSON metadata
+    // and UUID are populated by the per-device background worker below.
+    mergeDiscoveredDevice(deviceObject);
+
     const QString endpointKey = QStringLiteral("%1|%2")
         .arg(mDiscoveryGeneration)
         .arg(device.endpoint);
-    if (mPendingUuidEndpoints.contains(endpointKey))
+    if (mDeviceDataEndpoints.contains(endpointKey))
         return;
 
-    const quint64 requestId = mNextUuidRequestId++;
-    mPendingUuidEndpoints.insert(endpointKey);
-    mPendingUuidReads.insert(requestId, {deviceObject, mDiscoveryGeneration, endpointKey});
+    const quint64 requestId = mNextDeviceDataRequestId++;
+    mDeviceDataEndpoints.insert(endpointKey);
+    mPendingDeviceDataReads.insert(requestId,
+        {deviceObject, mDiscoveryGeneration, endpointKey, 0, QStringLiteral("Подготовка")});
+    ++mDeviceDataTotal;
+    updateDeviceDataProgress();
 
     QThread* thread = new QThread;
-    thread->setObjectName(QStringLiteral("uuid-%1").arg(requestId));
-    UuidWorker* worker = new UuidWorker(requestId, deviceObject);
+    thread->setObjectName(QStringLiteral("device-data-%1").arg(requestId));
+    DeviceDataWorker* worker = new DeviceDataWorker(requestId, deviceObject);
     worker->moveToThread(thread);
-    mUuidThreads.insert(thread);
+    mDeviceDataThreads.insert(thread);
 
-    connect(thread, &QThread::started, worker, &UuidWorker::run);
-    connect(worker, &UuidWorker::finished, this, &MainWindow::onUuidReadFinished);
-    connect(worker, &UuidWorker::finished, thread, &QThread::quit);
-    connect(worker, &UuidWorker::finished, worker, &UuidWorker::deleteLater);
+    connect(thread, &QThread::started, worker, &DeviceDataWorker::run);
+    connect(worker, &DeviceDataWorker::progressChanged, this, &MainWindow::onDeviceDataProgress);
+    connect(worker, &DeviceDataWorker::finished, this, &MainWindow::onDeviceDataFinished);
+    connect(worker, &DeviceDataWorker::finished, thread, &QThread::quit);
+    connect(worker, &DeviceDataWorker::finished, worker, &DeviceDataWorker::deleteLater);
     connect(thread, &QThread::finished, this, [this, thread]() {
-        mUuidThreads.remove(thread);
+        mDeviceDataThreads.remove(thread);
     });
     connect(thread, &QThread::finished, thread, &QThread::deleteLater);
     thread->start();
 }
 
-void MainWindow::onUuidReadFinished(quint64 requestId,
-    const QString& uuid,
-    const QString& error,
+void MainWindow::onDeviceDataProgress(quint64 requestId, int percent, const QString& stage)
+{
+    auto pendingIt = mPendingDeviceDataReads.find(requestId);
+    if (pendingIt == mPendingDeviceDataReads.end()
+        || pendingIt->discoveryGeneration != mDiscoveryGeneration)
+        return;
+    pendingIt->progress = qBound(0, percent, 100);
+    pendingIt->stage = stage;
+    updateDeviceDataProgress();
+}
+
+void MainWindow::onDeviceDataFinished(quint64 requestId,
+    DeviceIdentity identity,
+    const QStringList& warnings,
     const QString& rawResponse)
 {
-    const auto pendingIt = mPendingUuidReads.find(requestId);
-    if (pendingIt == mPendingUuidReads.end())
+    const auto pendingIt = mPendingDeviceDataReads.find(requestId);
+    if (pendingIt == mPendingDeviceDataReads.end())
         return;
 
-    const PendingUuidRead pending = pendingIt.value();
-    mPendingUuidReads.erase(pendingIt);
-    mPendingUuidEndpoints.remove(pending.endpointKey);
+    const PendingDeviceDataRead pending = pendingIt.value();
+    mPendingDeviceDataReads.erase(pendingIt);
     if (!pending.device || pending.discoveryGeneration != mDiscoveryGeneration)
         return;
 
-    DeviceIdentity device = pending.device->identity();
-    if (!uuid.isEmpty())
-    {
-        device.uuid = uuid;
-        device.id = uuid;
-        pending.device->updateIdentity(device);
-        appendLog(QStringLiteral("[%1] UUID %2").arg(device.typeHex(), device.uuid));
-    }
-    else
-    {
-        appendLog(QStringLiteral("[%1] UUID read failed at %2: %3")
-            .arg(device.typeHex(), device.endpoint, error));
-    }
+    identity = mServices->catalog().enrich(identity);
+    if (!identity.uuid.isEmpty())
+        identity.id = identity.uuid;
+    pending.device->updateIdentity(identity);
+    for (const QString& warning : warnings)
+        appendLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), warning));
     if (!rawResponse.isEmpty())
-        appendTransportLog(QStringLiteral("[%1] %2").arg(device.typeHex(), rawResponse));
+        appendTransportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), rawResponse));
 
     mergeDiscoveredDevice(pending.device);
-
-    bool hasPendingCurrentDiscovery = false;
-    for (auto it = mPendingUuidReads.cbegin(); it != mPendingUuidReads.cend(); ++it)
-    {
-        if (it.value().discoveryGeneration == mDiscoveryGeneration)
-        {
-            hasPendingCurrentDiscovery = true;
-            break;
-        }
-    }
-    if (!hasPendingCurrentDiscovery)
-        appendLog(QStringLiteral("Found %1 device(s); UUID identification finished").arg(mDevices.size()));
+    ++mDeviceDataCompleted;
+    updateDeviceDataProgress();
+    if (mDeviceDataCompleted >= mDeviceDataTotal)
+        appendLog(QStringLiteral("Found %1 device(s); device data received").arg(mDevices.size()));
 }
 
 void MainWindow::mergeDiscoveredDevice(const std::shared_ptr<DeviceBase>& deviceObject)
@@ -903,14 +938,49 @@ void MainWindow::onDiscoveryFinished()
 {
     setBusy(false);
     int pendingCount = 0;
-    for (auto it = mPendingUuidReads.cbegin(); it != mPendingUuidReads.cend(); ++it)
+    for (auto it = mPendingDeviceDataReads.cbegin(); it != mPendingDeviceDataReads.cend(); ++it)
     {
         if (it.value().discoveryGeneration == mDiscoveryGeneration)
             ++pendingCount;
     }
     appendLog(pendingCount > 0
-        ? QStringLiteral("Discovery finished; identifying UUID for %1 device(s)").arg(pendingCount)
+        ? QStringLiteral("Discovery finished; receiving data for %1 device(s)").arg(pendingCount)
         : QStringLiteral("Found %1 device(s)").arg(mDevices.size()));
+    updateDeviceDataProgress();
+}
+
+void MainWindow::updateDeviceDataProgress()
+{
+    if (!mDeviceDataProgressBar || !mDeviceDataProgressLabel)
+        return;
+    int progressSum = mDeviceDataCompleted * 100;
+    QString currentStage;
+    for (auto it = mPendingDeviceDataReads.cbegin(); it != mPendingDeviceDataReads.cend(); ++it)
+    {
+        if (it.value().discoveryGeneration != mDiscoveryGeneration)
+            continue;
+        progressSum += it.value().progress;
+        if (currentStage.isEmpty() && !it.value().stage.isEmpty())
+            currentStage = it.value().stage;
+    }
+    const int percent = mDeviceDataTotal > 0
+        ? qBound(0, progressSum / mDeviceDataTotal, 100)
+        : (mDiscoveryBusy ? 0 : 100);
+    mDeviceDataProgressBar->setVisible(true);
+    mDeviceDataProgressBar->setValue(percent);
+    mDeviceDataProgressLabel->setVisible(true);
+    if (mDeviceDataTotal == 0)
+        mDeviceDataProgressLabel->setText(mDiscoveryBusy
+            ? QStringLiteral("Поиск устройств")
+            : QStringLiteral("Устройства не найдены"));
+    else if (mDeviceDataCompleted >= mDeviceDataTotal)
+        mDeviceDataProgressLabel->setText(
+            QStringLiteral("Данные получены: %1/%1").arg(mDeviceDataTotal));
+    else
+        mDeviceDataProgressLabel->setText(QStringLiteral("%1 · %2/%3")
+            .arg(currentStage.isEmpty() ? QStringLiteral("Получение данных") : currentStage)
+            .arg(mDeviceDataCompleted)
+            .arg(mDeviceDataTotal));
 }
 
 void MainWindow::updateLineMode()
@@ -1106,13 +1176,18 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
         setActionBusy(false);
 
         const bool successful = result->received && result->successful;
+        const bool rediscoverAfterWorkflow = isFlashAction(action.id);
         const QString stage = workflowStageText(result->operation, result->stage);
         const QString title = action.title.isEmpty() ? action.id : action.title;
+        const QString refreshMessage = rediscoverAfterWorkflow
+            ? QStringLiteral("\nПосле закрытия сообщения будет выполнен повторный поиск устройств.")
+            : QString();
         QMessageBox notification(successful ? QMessageBox::Information : QMessageBox::Warning,
             title,
             successful
-                ? QStringLiteral("Операция завершена успешно.\nЭтап: %1\nДанные устройства обновлены.").arg(stage)
-                : QStringLiteral("Операция завершилась с ошибкой.\nЭтап: %1\nПодробности записаны в журнал операций.").arg(stage),
+                ? QStringLiteral("Операция завершена успешно.\nЭтап: %1%2").arg(stage, refreshMessage)
+                : QStringLiteral("Операция завершилась с ошибкой.\nЭтап: %1\n"
+                    "Подробности записаны в журнал операций.%2").arg(stage, refreshMessage),
             QMessageBox::Ok,
             this);
         notification.show();
@@ -1130,6 +1205,11 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
             panel->setVisible(false);
         for (QProgressBar* progress : mWorkflowProgressBars)
             progress->setValue(0);
+        if (rediscoverAfterWorkflow)
+        {
+            appendLog(QStringLiteral("Повторный поиск устройств после прошивки"));
+            QTimer::singleShot(0, this, &MainWindow::startDiscovery);
+        }
     });
 
     mWorkflowThread = thread;
@@ -1145,17 +1225,41 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
 
 void MainWindow::appendLog(const QString& message)
 {
+    appendFileLog(QStringLiteral("OPERATION"), message);
     mLog->appendPlainText(QStringLiteral("[%1] %2")
         .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
 }
 
 void MainWindow::appendTransportLog(const QString& message)
 {
+    appendFileLog(QStringLiteral("TRANSPORT"), message);
     if (!mTransportLog)
         return;
 
     mTransportLog->appendPlainText(QStringLiteral("[%1] %2")
         .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
+}
+
+QString MainWindow::logFilePath() const
+{
+    const QString directoryPath = QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("logs"));
+    QDir().mkpath(directoryPath);
+    return QDir(directoryPath).filePath(QStringLiteral("device-workbench-%1.log")
+        .arg(QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"))));
+}
+
+void MainWindow::appendFileLog(const QString& category, const QString& message) const
+{
+    QFile file(logFilePath());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+        return;
+
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    stream << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))
+           << QStringLiteral(" [") << category << QStringLiteral("] ")
+           << message << QLatin1Char('\n');
 }
 
 void MainWindow::onWorkflowProgress(int percent)
@@ -1197,6 +1301,8 @@ QString MainWindow::workflowStageText(const QString& operation, const QString& s
         {QStringLiteral("device.enterBootloader"), QStringLiteral("Загрузка bootloader")},
         {QStringLiteral("device.disableApplicationLoad"), QStringLiteral("Запрет загрузки приложения")},
         {QStringLiteral("device.disableLoadApplication"), QStringLiteral("Запрет загрузки приложения")},
+        {QStringLiteral("device.captureServiceData"), QStringLiteral("Сохранение параметров устройства")},
+        {QStringLiteral("device.restoreServiceData"), QStringLiteral("Восстановление параметров устройства")},
         {QStringLiteral("device.writeProductionDate"), QStringLiteral("Запись даты производства")},
         {QStringLiteral("device.writeSerialNumber"), QStringLiteral("Запись номера устройства")},
         {QStringLiteral("device.loadApplication"), QStringLiteral("Запуск приложения")},
@@ -1359,6 +1465,16 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         const QVector<FirmwareArtifact> artifacts = artifactsForTarget(devices, action.target);
         const bool graphControlled = action.target == QStringLiteral("application")
             && devices.first() && !devices.first()->identity().firmwareVersions.isEmpty();
+        bool hasUnknownCurrentFirmware = false;
+        for (const std::shared_ptr<DeviceBase>& device : devices)
+        {
+            if (device && device->identity().known
+                && device->identity().currentFirmwareId.isEmpty())
+            {
+                hasUnknownCurrentFirmware = true;
+                break;
+            }
+        }
 
         QDialog dialog(this);
         dialog.setWindowTitle(title);
@@ -1366,11 +1482,15 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         QVBoxLayout* layout = new QVBoxLayout(&dialog);
         QLabel* intro = new QLabel(graphControlled
             ? (devices.size() == 1
-                ? QStringLiteral("Текущая прошивка: %1. Выберите разрешённый переход.")
-                    .arg(devices.first()->identity().currentFirmwareId.isEmpty()
-                        ? QStringLiteral("не определена")
-                        : devices.first()->identity().currentFirmwareId)
-                : QStringLiteral("Выберите переход, разрешённый для всех %1 устройств.").arg(devices.size()))
+                ? (hasUnknownCurrentFirmware
+                    ? QStringLiteral("Версия текущей прошивки не определена. "
+                        "Доступны все прошивки для этого устройства.")
+                    : QStringLiteral("Текущая прошивка: %1. Выберите разрешённый переход.")
+                        .arg(devices.first()->identity().currentFirmwareId))
+                : (hasUnknownCurrentFirmware
+                    ? QStringLiteral("Для устройств с неизвестной версией доступны все прошивки; "
+                        "для остальных учтены разрешённые переходы.")
+                    : QStringLiteral("Выберите переход, разрешённый для всех %1 устройств.").arg(devices.size())))
             : (devices.size() == 1
                 ? QStringLiteral("Выберите файл прошивки для 1 устройства.")
                 : QStringLiteral("Выберите файл прошивки для %1 устройств.").arg(devices.size())));
@@ -1389,7 +1509,9 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         }
         if (artifactCombo->count() == 0)
             artifactCombo->addItem(graphControlled
-                ? QStringLiteral("Нет разрешённых переходов")
+                ? (hasUnknownCurrentFirmware
+                    ? QStringLiteral("Нет общей подходящей прошивки")
+                    : QStringLiteral("Нет разрешённых переходов"))
                 : QStringLiteral("Нет прошивки в каталоге"), -1);
         artifactCombo->setCurrentIndex(defaultIndex);
         form->addRow(QStringLiteral("Прошивка"), artifactCombo);
@@ -1412,7 +1534,8 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
 
         QLabel* warning = new QLabel(QStringLiteral("Запись application flash выполняется через bootloader block flash: pages are written with command 0x43, verify reads back with 0x44."));
         if (graphControlled)
-            warning->setText(QStringLiteral("Порядок reset, flash, verify, restart и ожидания application задаётся выбранным переходом в графе прошивок."));
+            warning->setText(QStringLiteral("Порядок reset, flash, verify, restart и ожидания application "
+                "задаётся выбранной прошивкой."));
         warning->setWordWrap(true);
         layout->addWidget(warning);
 
@@ -1524,8 +1647,11 @@ void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceB
         .arg(identity.typeHex(), identity.versionHex(), identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
     mDiscoveryTable->setItem(row, DiscoveryDevice, deviceItem);
 
-    const QString numberText = !identity.serialNumber.isEmpty() ? identity.serialNumber : identity.id;
-    mDiscoveryTable->setItem(row, DiscoveryNumber, new QTableWidgetItem(numberText));
+    QTableWidgetItem* number = new QTableWidgetItem(
+        identity.serialNumber.isEmpty() ? QStringLiteral("—") : identity.serialNumber);
+    if (identity.serialNumber.isEmpty())
+        number->setToolTip(QStringLiteral("Номер устройства не получен\nID: %1").arg(identity.id));
+    mDiscoveryTable->setItem(row, DiscoveryNumber, number);
     mDiscoveryTable->setItem(row, DiscoveryAddress,
         new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString()));
     mDiscoveryTable->setItem(row, DiscoveryChannel,
@@ -1536,8 +1662,13 @@ void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceB
 
     const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
     bool canPing = false;
+    bool canLoadApplication = false;
     for (const ActionSpec& spec : specs)
+    {
         canPing = canPing || spec.id == QStringLiteral("device.ping");
+        canLoadApplication = canLoadApplication
+            || spec.id == QStringLiteral("device.application.load");
+    }
     const bool deviceBusy = isDeviceBusy(device);
     QPushButton* ping = new QPushButton;
     ping->setObjectName(QStringLiteral("tablePing"));
@@ -1551,7 +1682,28 @@ void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceB
     connect(ping, &QPushButton::clicked, this, [this, row]() {
         runActionForRow(row, QStringLiteral("device.ping"));
     });
-    mDiscoveryTable->setCellWidget(row, DiscoveryPing, tableButtonCell(ping));
+
+    QPushButton* loadApplication = nullptr;
+    if (identity.isBootloader() && canLoadApplication)
+    {
+        loadApplication = new QPushButton;
+        loadApplication->setObjectName(QStringLiteral("tableFlash"));
+        loadApplication->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+        loadApplication->setIconSize(QSize(18, 18));
+        loadApplication->setAccessibleName(QStringLiteral("Загрузить основное приложение"));
+        if (deviceBusy)
+            loadApplication->setToolTip(QStringLiteral("Дождитесь завершения текущей операции с устройством"));
+        else if (mWorkflowThread)
+            loadApplication->setToolTip(QStringLiteral("Дождитесь завершения текущей операции"));
+        else
+            loadApplication->setToolTip(QStringLiteral("Загрузить основное приложение"));
+        loadApplication->setEnabled(!deviceBusy && !mWorkflowThread);
+        connect(loadApplication, &QPushButton::clicked, this, [this, row]() {
+            runActionForRow(row, QStringLiteral("device.application.load"));
+        });
+    }
+    mDiscoveryTable->setCellWidget(row, DiscoveryPing,
+        tableButtonCell(ping, loadApplication));
     mDiscoveryTable->resizeRowToContents(row);
 }
 
@@ -1578,10 +1730,10 @@ void MainWindow::updateFirmwareDeviceRow(int row, const std::shared_ptr<DeviceBa
     deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
         .arg(identity.typeHex(), identity.versionHex(), identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
     mFirmwareTable->setItem(row, FirmwareDevice, deviceItem);
-    const QString numberText = !identity.serialNumber.isEmpty() ? identity.serialNumber : identity.id;
-    QTableWidgetItem* number = new QTableWidgetItem(numberText);
+    QTableWidgetItem* number = new QTableWidgetItem(
+        identity.serialNumber.isEmpty() ? QStringLiteral("—") : identity.serialNumber);
     if (identity.serialNumber.isEmpty())
-        number->setToolTip(QStringLiteral("ID %1").arg(identity.id));
+        number->setToolTip(QStringLiteral("Номер устройства не получен\nID: %1").arg(identity.id));
     mFirmwareTable->setItem(row, FirmwareNumber, number);
     QTableWidgetItem* address = new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString());
     address->setToolTip(QStringLiteral("Modbus address"));
@@ -1709,10 +1861,10 @@ void MainWindow::updateDeviceActionRow(QTableWidget* table,
             identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
     table->setItem(row, DeviceActionDevice, deviceItem);
 
-    const QString numberText = !identity.serialNumber.isEmpty() ? identity.serialNumber : identity.id;
-    QTableWidgetItem* number = new QTableWidgetItem(numberText);
+    QTableWidgetItem* number = new QTableWidgetItem(
+        identity.serialNumber.isEmpty() ? QStringLiteral("—") : identity.serialNumber);
     if (identity.serialNumber.isEmpty())
-        number->setToolTip(QStringLiteral("ID %1").arg(identity.id));
+        number->setToolTip(QStringLiteral("Номер устройства не получен\nID: %1").arg(identity.id));
     table->setItem(row, DeviceActionNumber, number);
     table->setItem(row, DeviceActionAddress,
         new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString()));

@@ -6,6 +6,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QVector>
+#include <functional>
 
 class IDeviceTransport
 {
@@ -23,6 +24,28 @@ public:
             uuid->clear();
         if (error)
             *error = QStringLiteral("UUID read is not supported by this transport");
+        return false;
+    }
+    virtual bool readIdentityDescription(const DeviceIdentity&, quint16* type, quint16* version,
+        QString* description, QString* error, QString* = nullptr)
+    {
+        if (type)
+            *type = 0;
+        if (version)
+            *version = 0;
+        if (description)
+            description->clear();
+        if (error)
+            *error = QStringLiteral("Identity description is not supported by this transport");
+        return false;
+    }
+    virtual bool readExtendedDescription(const DeviceIdentity&, QByteArray* description,
+        const std::function<void(int)>&, QString* error, QString* = nullptr)
+    {
+        if (description)
+            description->clear();
+        if (error)
+            *error = QStringLiteral("Extended description is not supported by this transport");
         return false;
     }
     virtual bool resetDevice(const DeviceIdentity& device, QString* error, QString* rawResponse = nullptr) = 0;

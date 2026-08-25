@@ -111,6 +111,32 @@ bool DeviceBase::readUuid(QString* uuid, QString* error, QString* rawResponse) c
     return mTransport->readUuid(mIdentity, uuid, error, rawResponse);
 }
 
+bool DeviceBase::readIdentityDescription(quint16* type, quint16* version, QString* description,
+    QString* error, QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->readIdentityDescription(mIdentity, type, version, description, error, rawResponse);
+}
+
+bool DeviceBase::readExtendedDescription(QByteArray* description,
+    const std::function<void(int)>& progress,
+    QString* error,
+    QString* rawResponse) const
+{
+    if (!mTransport)
+    {
+        if (error)
+            *error = QStringLiteral("Device transport is not available");
+        return false;
+    }
+    return mTransport->readExtendedDescription(mIdentity, description, progress, error, rawResponse);
+}
+
 bool DeviceBase::flashGetParams(QVector<FlashMemoryParams>* params, QString* error, QString* rawResponse) const
 {
     if (!mTransport)

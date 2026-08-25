@@ -415,9 +415,11 @@ bool WorkflowExecution::isRuntimeStep(const QString& operation) const
         QStringLiteral("firmware.validateTransition"),
         QStringLiteral("device.enterBootloader"),
         QStringLiteral("device.disableApplicationLoad"),
+        QStringLiteral("device.captureServiceData"),
         QStringLiteral("firmware.validateArtifact"),
         QStringLiteral("firmware.flash"),
         QStringLiteral("firmware.verify"),
+        QStringLiteral("device.restoreServiceData"),
         QStringLiteral("device.waitForApplication"),
         QStringLiteral("firmware.verifyInstalledVersion"),
         QStringLiteral("firmware.complete"),
@@ -488,18 +490,19 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     if (step.op == QStringLiteral("firmware.validateTransition"))
     {
         mContext.targetFirmwareId = mParameters.value(QStringLiteral("targetFirmwareId")).toString();
-        if (identity.currentFirmwareId.isEmpty())
+        const FirmwareVersionSpec* target = identity.firmwareVersionById(mContext.targetFirmwareId);
+        if (!target)
         {
-            log(QStringLiteral("[%1] firmware transition denied: %2")
-                .arg(identity.typeHex(), identity.firmwareDetectionError.isEmpty()
-                    ? QStringLiteral("current firmware is unknown")
-                    : identity.firmwareDetectionError));
+            log(QStringLiteral("[%1] firmware target %2 is not configured for this device")
+                .arg(identity.typeHex(), mContext.targetFirmwareId));
             return false;
         }
 
-        const FirmwareTransitionSpec* transition = identity.transitionTo(mContext.targetFirmwareId);
-        const FirmwareVersionSpec* target = identity.firmwareVersionById(mContext.targetFirmwareId);
-        if (!transition || !transition->enabled || !target)
+        const bool unknownCurrentFirmware = identity.known && identity.currentFirmwareId.isEmpty();
+        const FirmwareTransitionSpec* transition = unknownCurrentFirmware
+            ? nullptr
+            : identity.transitionTo(mContext.targetFirmwareId);
+        if (!unknownCurrentFirmware && (!transition || !transition->enabled))
         {
             const QString reason = transition && !transition->reason.isEmpty()
                 ? transition->reason
@@ -537,9 +540,18 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         if (target->artifact.pagesCount > 0)
             mContext.flashPlan.endPage = target->artifact.pagesCount - 1;
 
-        log(QStringLiteral("[%1] firmware transition %2 -> %3 via %4, strategy=%5")
-            .arg(identity.typeHex(), identity.currentFirmwareId, target->id,
-                target->installation.workflow, target->installation.strategy));
+        if (unknownCurrentFirmware)
+        {
+            log(QStringLiteral("[%1] current firmware is unknown; target %2 selected from device catalog via %3, strategy=%4")
+                .arg(identity.typeHex(), target->id,
+                    target->installation.workflow, target->installation.strategy));
+        }
+        else
+        {
+            log(QStringLiteral("[%1] firmware transition %2 -> %3 via %4, strategy=%5")
+                .arg(identity.typeHex(), identity.currentFirmwareId, target->id,
+                    target->installation.workflow, target->installation.strategy));
+        }
         reportProgressStage(identity, QStringLiteral("queued"));
         return true;
     }
@@ -637,6 +649,49 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     if (step.op == QStringLiteral("device.disableApplicationLoad"))
         return disableApplicationLoading(device);
 
+    if (step.op == QStringLiteral("device.captureServiceData"))
+    {
+        struct ServiceValue
+        {
+            int registerIndex;
+            QString label;
+            qint32* value;
+            bool* available;
+        };
+        const ServiceValue values[] = {
+            {identity.productionDateRegister, QStringLiteral("production date"),
+                &mContext.preservedProductionDate, &mContext.hasPreservedProductionDate},
+            {identity.serialNumberRegister, QStringLiteral("serial number"),
+                &mContext.preservedSerialNumber, &mContext.hasPreservedSerialNumber}
+        };
+        for (const ServiceValue& service : values)
+        {
+            if (service.registerIndex < 0)
+                continue;
+            QString error;
+            QString raw;
+            qint32 value = 0;
+            if (!device.readInt(quint16(service.registerIndex), &value, &error, &raw))
+            {
+                if (!raw.isEmpty())
+                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+                log(QStringLiteral("[%1] cannot preserve %2 from int[%3]: %4")
+                    .arg(identity.typeHex(), service.label)
+                    .arg(service.registerIndex)
+                    .arg(error));
+                return false;
+            }
+            if (!raw.isEmpty())
+                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+            *service.value = value;
+            *service.available = true;
+            log(QStringLiteral("[%1] preserved %2 from int[%3]")
+                .arg(identity.typeHex(), service.label)
+                .arg(service.registerIndex));
+        }
+        return true;
+    }
+
     if (step.op == QStringLiteral("firmware.validateArtifact"))
     {
         if (!mContext.transitionValidated)
@@ -687,27 +742,110 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         return verifyFlashPages(device);
     }
 
+    if (step.op == QStringLiteral("device.restoreServiceData"))
+    {
+        struct ServiceValue
+        {
+            int registerIndex;
+            QString label;
+            qint32 value;
+            bool available;
+        };
+        const ServiceValue values[] = {
+            {identity.productionDateRegister, QStringLiteral("production date"),
+                mContext.preservedProductionDate, mContext.hasPreservedProductionDate},
+            {identity.serialNumberRegister, QStringLiteral("serial number"),
+                mContext.preservedSerialNumber, mContext.hasPreservedSerialNumber}
+        };
+        for (const ServiceValue& service : values)
+        {
+            if (!service.available || service.registerIndex < 0)
+                continue;
+            QString error;
+            QString raw;
+            bool restored = false;
+            for (int attempt = 1; attempt <= 4; ++attempt)
+            {
+                error.clear();
+                raw.clear();
+                if (device.writeInt(quint16(service.registerIndex), service.value, &error, &raw))
+                {
+                    restored = true;
+                    break;
+                }
+                if (!raw.isEmpty())
+                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+                if (attempt < 4)
+                    sleepWithEvents(500);
+            }
+            if (!raw.isEmpty())
+                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+            if (!restored)
+            {
+                log(QStringLiteral("[%1] cannot restore %2 to int[%3]: %4")
+                    .arg(identity.typeHex(), service.label)
+                    .arg(service.registerIndex)
+                    .arg(error));
+                return false;
+            }
+            log(QStringLiteral("[%1] restored %2 to int[%3]")
+                .arg(identity.typeHex(), service.label)
+                .arg(service.registerIndex));
+        }
+        return true;
+    }
+
     if (step.op == QStringLiteral("device.waitForApplication"))
     {
         DeviceIdentity expected = identity;
         expected.type = identity.applicationType;
         expected.version = identity.applicationVersion;
         expected.state = QStringLiteral("application");
-        QString error;
-        QString raw;
         const int timeoutMs = step.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
         const int pollIntervalMs = step.arguments.value(QStringLiteral("pollIntervalMs"), 1000).toInt();
-        if (!device.waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs,
-                &mContext.reappearedIdentity, &error, &raw))
+        const int retryLoadAttempts = qMax(0,
+            step.arguments.value(QStringLiteral("retryLoadAttempts"), 0).toInt());
+        const int retryDelayMs = qMax(0,
+            step.arguments.value(QStringLiteral("retryDelayMs"), 1000).toInt());
+
+        for (int waitAttempt = 0; waitAttempt <= retryLoadAttempts; ++waitAttempt)
         {
+            QString error;
+            QString raw;
+            if (device.waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs,
+                    &mContext.reappearedIdentity, &error, &raw))
+            {
+                if (!raw.isEmpty())
+                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
+                return true;
+            }
             if (!raw.isEmpty())
                 transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-            log(QStringLiteral("[%1] waitForApplication failed: %2").arg(identity.typeHex(), error));
-            return false;
+            log(QStringLiteral("[%1] waitForApplication attempt %2 failed: %3")
+                .arg(identity.typeHex()).arg(waitAttempt + 1).arg(error));
+
+            if (waitAttempt >= retryLoadAttempts)
+                return false;
+
+            if (retryDelayMs > 0)
+                sleepWithEvents(retryDelayMs);
+            log(QStringLiteral("[%1] application is still unavailable; retry load application (%2/%3)")
+                .arg(identity.typeHex()).arg(waitAttempt + 2).arg(retryLoadAttempts + 1));
+
+            QString loadError;
+            QString loadRaw;
+            if (!device.loadApplicationNoReply(&loadError, &loadRaw))
+            {
+                if (!loadRaw.isEmpty())
+                    transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), loadRaw));
+                log(QStringLiteral("[%1] retry load application failed: %2")
+                    .arg(identity.typeHex(), loadError));
+                return false;
+            }
+            if (!loadRaw.isEmpty())
+                transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), loadRaw));
         }
-        if (!raw.isEmpty())
-            transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-        return true;
+        return false;
     }
 
     if (step.op == QStringLiteral("firmware.verifyInstalledVersion"))
@@ -952,6 +1090,17 @@ bool WorkflowExecution::executeDeviceStep(DeviceBase& device, const WorkflowStep
         log(QStringLiteral("[%1] %2 failed: %3")
             .arg(identity.typeHex(), step.label, mContext.transportError));
         return false;
+    }
+
+    // A direct identity refresh may not contain a serial number (for example,
+    // when UDP discovery is unavailable and the device is reached over TCP).
+    // Keep the in-memory identity in sync as soon as the write succeeds so the
+    // refresh can retain the actual requested number instead of losing it.
+    if (step.op == QStringLiteral("device.writeSerialNumber"))
+    {
+        DeviceIdentity updated = device.identity();
+        updated.serialNumber = QString::number(arguments.value(QStringLiteral("value")).toInt());
+        device.updateIdentity(updated);
     }
 
     return true;

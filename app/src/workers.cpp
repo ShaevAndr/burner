@@ -1,6 +1,9 @@
 #include "workers.h"
 
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QTimer>
 
 #include <utility>
@@ -10,25 +13,114 @@ namespace
 constexpr int kIdentityRefreshTimeoutMs = 60000;
 constexpr int kIdentityRefreshPollIntervalMs = 500;
 constexpr int kRunningProgressMaximum = 99;
+
+QJsonObject extendedDescriptionObject(const QByteArray& data)
+{
+    const int jsonStart = data.indexOf('{');
+    if (jsonStart < 0)
+        return {};
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(data.mid(jsonStart), &parseError);
+    return parseError.error == QJsonParseError::NoError && document.isObject()
+        ? document.object()
+        : QJsonObject();
 }
 
-UuidWorker::UuidWorker(quint64 requestId, std::shared_ptr<DeviceBase> device, QObject* parent) :
+QString identityDescriptionFromJson(const QJsonObject& root)
+{
+    const QJsonObject deviceInfo = root.value(QStringLiteral("DeviceInfo")).toObject();
+    return deviceInfo.value(QStringLiteral("Description")).toString().trimmed();
+}
+}
+
+DeviceDataWorker::DeviceDataWorker(quint64 requestId, std::shared_ptr<DeviceBase> device, QObject* parent) :
     QObject(parent),
     mRequestId(requestId),
     mDevice(std::move(device))
 {
 }
 
-void UuidWorker::run()
+void DeviceDataWorker::run()
 {
-    QString uuid;
+    DeviceIdentity identity;
+    QStringList warnings;
+    QStringList rawResponses;
+    if (!mDevice)
+    {
+        warnings.append(QStringLiteral("Device is not available"));
+        emit finished(mRequestId, identity, warnings, QString());
+        return;
+    }
+
+    identity = mDevice->identity();
+    emit progressChanged(mRequestId, 0, QStringLiteral("Расширенное описание JSON"));
+    QByteArray extendedDescription;
     QString error;
     QString rawResponse;
-    if (!mDevice)
-        error = QStringLiteral("Device is not available");
+    const bool extendedDescriptionRead = mDevice->readExtendedDescription(
+        &extendedDescription,
+        [this](int percent) {
+            emit progressChanged(mRequestId, qBound(0, (percent * 70) / 100, 70),
+                QStringLiteral("Расширенное описание JSON"));
+        },
+        &error,
+        &rawResponse);
+    if (extendedDescriptionRead)
+        identity.descriptionJson = extendedDescription;
     else
-        mDevice->readUuid(&uuid, &error, &rawResponse);
-    emit finished(mRequestId, uuid, error, rawResponse);
+        warnings.append(QStringLiteral("JSON description: %1").arg(error));
+    if (!rawResponse.isEmpty())
+        rawResponses.append(rawResponse);
+
+    const QJsonObject descriptionObject = extendedDescriptionRead
+        ? extendedDescriptionObject(extendedDescription)
+        : QJsonObject();
+    const QString jsonIdentityDescription = identityDescriptionFromJson(descriptionObject);
+    emit progressChanged(mRequestId, 72, jsonIdentityDescription.isEmpty()
+        ? QStringLiteral("Полное описание устройства")
+        : QStringLiteral("Описание получено из JSON"));
+    if (!jsonIdentityDescription.isEmpty())
+    {
+        identity.description = jsonIdentityDescription;
+    }
+    else
+    {
+        quint16 type = 0;
+        quint16 version = 0;
+        QString description;
+        error.clear();
+        rawResponse.clear();
+        if (mDevice->readIdentityDescription(&type, &version, &description, &error, &rawResponse))
+        {
+            identity.type = type;
+            identity.version = version;
+            identity.description = description;
+        }
+        else
+        {
+            warnings.append(QStringLiteral("Full identity description: %1").arg(error));
+        }
+        if (!rawResponse.isEmpty())
+            rawResponses.append(rawResponse);
+    }
+
+    emit progressChanged(mRequestId, 85, QStringLiteral("UUID устройства"));
+    QString uuid;
+    error.clear();
+    rawResponse.clear();
+    if (mDevice->readUuid(&uuid, &error, &rawResponse))
+    {
+        identity.uuid = uuid;
+        identity.id = uuid;
+    }
+    else
+    {
+        warnings.append(QStringLiteral("UUID: %1").arg(error));
+    }
+    if (!rawResponse.isEmpty())
+        rawResponses.append(rawResponse);
+    emit progressChanged(mRequestId, 100, QStringLiteral("Данные устройства получены"));
+    emit finished(mRequestId, identity, warnings, rawResponses.join(QLatin1Char('\n')));
 }
 
 WorkflowWorker::WorkflowWorker(WorkflowRepository* workflows,
@@ -100,6 +192,11 @@ void WorkflowWorker::run()
         }
         else
         {
+            // The transport's direct TCP fallback can identify the device by
+            // type and UUID but has no serial field. Do not erase the known
+            // serial (including a number just written by this workflow).
+            if (refreshed.serialNumber.trimmed().isEmpty())
+                refreshed.serialNumber = device->identity().serialNumber;
             emit identityRefreshed(deviceIndex, refreshed);
             emit logMessage(QStringLiteral("[%1] device identity refreshed")
                 .arg(refreshed.typeHex()));

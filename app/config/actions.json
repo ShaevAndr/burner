@@ -78,7 +78,7 @@
     },
     {
       "id": "device.application.load",
-      "title": "Load main application",
+      "title": "Загрузить основное приложение",
       "selection": "many",
       "dangerLevel": "medium",
       "when": {

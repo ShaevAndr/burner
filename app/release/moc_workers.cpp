@@ -20,53 +20,61 @@
 QT_BEGIN_MOC_NAMESPACE
 QT_WARNING_PUSH
 QT_WARNING_DISABLE_DEPRECATED
-struct qt_meta_stringdata_UuidWorker_t {
-    QByteArrayData data[8];
-    char stringdata0[58];
+struct qt_meta_stringdata_DeviceDataWorker_t {
+    QByteArrayData data[12];
+    char stringdata0[116];
 };
 #define QT_MOC_LITERAL(idx, ofs, len) \
     Q_STATIC_BYTE_ARRAY_DATA_HEADER_INITIALIZER_WITH_OFFSET(len, \
-    qptrdiff(offsetof(qt_meta_stringdata_UuidWorker_t, stringdata0) + ofs \
+    qptrdiff(offsetof(qt_meta_stringdata_DeviceDataWorker_t, stringdata0) + ofs \
         - idx * sizeof(QByteArrayData)) \
     )
-static const qt_meta_stringdata_UuidWorker_t qt_meta_stringdata_UuidWorker = {
+static const qt_meta_stringdata_DeviceDataWorker_t qt_meta_stringdata_DeviceDataWorker = {
     {
-QT_MOC_LITERAL(0, 0, 10), // "UuidWorker"
-QT_MOC_LITERAL(1, 11, 8), // "finished"
-QT_MOC_LITERAL(2, 20, 0), // ""
-QT_MOC_LITERAL(3, 21, 9), // "requestId"
-QT_MOC_LITERAL(4, 31, 4), // "uuid"
-QT_MOC_LITERAL(5, 36, 5), // "error"
-QT_MOC_LITERAL(6, 42, 11), // "rawResponse"
-QT_MOC_LITERAL(7, 54, 3) // "run"
+QT_MOC_LITERAL(0, 0, 16), // "DeviceDataWorker"
+QT_MOC_LITERAL(1, 17, 15), // "progressChanged"
+QT_MOC_LITERAL(2, 33, 0), // ""
+QT_MOC_LITERAL(3, 34, 9), // "requestId"
+QT_MOC_LITERAL(4, 44, 7), // "percent"
+QT_MOC_LITERAL(5, 52, 5), // "stage"
+QT_MOC_LITERAL(6, 58, 8), // "finished"
+QT_MOC_LITERAL(7, 67, 14), // "DeviceIdentity"
+QT_MOC_LITERAL(8, 82, 8), // "identity"
+QT_MOC_LITERAL(9, 91, 8), // "warnings"
+QT_MOC_LITERAL(10, 100, 11), // "rawResponse"
+QT_MOC_LITERAL(11, 112, 3) // "run"
 
     },
-    "UuidWorker\0finished\0\0requestId\0uuid\0"
-    "error\0rawResponse\0run"
+    "DeviceDataWorker\0progressChanged\0\0"
+    "requestId\0percent\0stage\0finished\0"
+    "DeviceIdentity\0identity\0warnings\0"
+    "rawResponse\0run"
 };
 #undef QT_MOC_LITERAL
 
-static const uint qt_meta_data_UuidWorker[] = {
+static const uint qt_meta_data_DeviceDataWorker[] = {
 
  // content:
        8,       // revision
        0,       // classname
        0,    0, // classinfo
-       2,   14, // methods
+       3,   14, // methods
        0,    0, // properties
        0,    0, // enums/sets
        0,    0, // constructors
        0,       // flags
-       1,       // signalCount
+       2,       // signalCount
 
  // signals: name, argc, parameters, tag, flags
-       1,    4,   24,    2, 0x06 /* Public */,
+       1,    3,   29,    2, 0x06 /* Public */,
+       6,    4,   36,    2, 0x06 /* Public */,
 
  // slots: name, argc, parameters, tag, flags
-       7,    0,   33,    2, 0x0a /* Public */,
+      11,    0,   45,    2, 0x0a /* Public */,
 
  // signals: parameters
-    QMetaType::Void, QMetaType::ULongLong, QMetaType::QString, QMetaType::QString, QMetaType::QString,    3,    4,    5,    6,
+    QMetaType::Void, QMetaType::ULongLong, QMetaType::Int, QMetaType::QString,    3,    4,    5,
+    QMetaType::Void, QMetaType::ULongLong, 0x80000000 | 7, QMetaType::QStringList, QMetaType::QString,    3,    8,    9,   10,
 
  // slots: parameters
     QMetaType::Void,
@@ -74,73 +82,99 @@ static const uint qt_meta_data_UuidWorker[] = {
        0        // eod
 };
 
-void UuidWorker::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
+void DeviceDataWorker::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
 {
     if (_c == QMetaObject::InvokeMetaMethod) {
-        auto *_t = static_cast<UuidWorker *>(_o);
+        auto *_t = static_cast<DeviceDataWorker *>(_o);
         Q_UNUSED(_t)
         switch (_id) {
-        case 0: _t->finished((*reinterpret_cast< quint64(*)>(_a[1])),(*reinterpret_cast< QString(*)>(_a[2])),(*reinterpret_cast< QString(*)>(_a[3])),(*reinterpret_cast< QString(*)>(_a[4]))); break;
-        case 1: _t->run(); break;
+        case 0: _t->progressChanged((*reinterpret_cast< quint64(*)>(_a[1])),(*reinterpret_cast< int(*)>(_a[2])),(*reinterpret_cast< QString(*)>(_a[3]))); break;
+        case 1: _t->finished((*reinterpret_cast< quint64(*)>(_a[1])),(*reinterpret_cast< DeviceIdentity(*)>(_a[2])),(*reinterpret_cast< QStringList(*)>(_a[3])),(*reinterpret_cast< QString(*)>(_a[4]))); break;
+        case 2: _t->run(); break;
         default: ;
+        }
+    } else if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
+        switch (_id) {
+        default: *reinterpret_cast<int*>(_a[0]) = -1; break;
+        case 1:
+            switch (*reinterpret_cast<int*>(_a[1])) {
+            default: *reinterpret_cast<int*>(_a[0]) = -1; break;
+            case 1:
+                *reinterpret_cast<int*>(_a[0]) = qRegisterMetaType< DeviceIdentity >(); break;
+            }
+            break;
         }
     } else if (_c == QMetaObject::IndexOfMethod) {
         int *result = reinterpret_cast<int *>(_a[0]);
         {
-            using _t = void (UuidWorker::*)(quint64 , QString , QString , QString );
-            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&UuidWorker::finished)) {
+            using _t = void (DeviceDataWorker::*)(quint64 , int , QString );
+            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&DeviceDataWorker::progressChanged)) {
                 *result = 0;
+                return;
+            }
+        }
+        {
+            using _t = void (DeviceDataWorker::*)(quint64 , DeviceIdentity , QStringList , QString );
+            if (*reinterpret_cast<_t *>(_a[1]) == static_cast<_t>(&DeviceDataWorker::finished)) {
+                *result = 1;
                 return;
             }
         }
     }
 }
 
-QT_INIT_METAOBJECT const QMetaObject UuidWorker::staticMetaObject = { {
+QT_INIT_METAOBJECT const QMetaObject DeviceDataWorker::staticMetaObject = { {
     &QObject::staticMetaObject,
-    qt_meta_stringdata_UuidWorker.data,
-    qt_meta_data_UuidWorker,
+    qt_meta_stringdata_DeviceDataWorker.data,
+    qt_meta_data_DeviceDataWorker,
     qt_static_metacall,
     nullptr,
     nullptr
 } };
 
 
-const QMetaObject *UuidWorker::metaObject() const
+const QMetaObject *DeviceDataWorker::metaObject() const
 {
     return QObject::d_ptr->metaObject ? QObject::d_ptr->dynamicMetaObject() : &staticMetaObject;
 }
 
-void *UuidWorker::qt_metacast(const char *_clname)
+void *DeviceDataWorker::qt_metacast(const char *_clname)
 {
     if (!_clname) return nullptr;
-    if (!strcmp(_clname, qt_meta_stringdata_UuidWorker.stringdata0))
+    if (!strcmp(_clname, qt_meta_stringdata_DeviceDataWorker.stringdata0))
         return static_cast<void*>(this);
     return QObject::qt_metacast(_clname);
 }
 
-int UuidWorker::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
+int DeviceDataWorker::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
 {
     _id = QObject::qt_metacall(_c, _id, _a);
     if (_id < 0)
         return _id;
     if (_c == QMetaObject::InvokeMetaMethod) {
-        if (_id < 2)
+        if (_id < 3)
             qt_static_metacall(this, _c, _id, _a);
-        _id -= 2;
+        _id -= 3;
     } else if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
-        if (_id < 2)
-            *reinterpret_cast<int*>(_a[0]) = -1;
-        _id -= 2;
+        if (_id < 3)
+            qt_static_metacall(this, _c, _id, _a);
+        _id -= 3;
     }
     return _id;
 }
 
 // SIGNAL 0
-void UuidWorker::finished(quint64 _t1, QString _t2, QString _t3, QString _t4)
+void DeviceDataWorker::progressChanged(quint64 _t1, int _t2, QString _t3)
+{
+    void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)), const_cast<void*>(reinterpret_cast<const void*>(&_t3)) };
+    QMetaObject::activate(this, &staticMetaObject, 0, _a);
+}
+
+// SIGNAL 1
+void DeviceDataWorker::finished(quint64 _t1, DeviceIdentity _t2, QStringList _t3, QString _t4)
 {
     void *_a[] = { nullptr, const_cast<void*>(reinterpret_cast<const void*>(&_t1)), const_cast<void*>(reinterpret_cast<const void*>(&_t2)), const_cast<void*>(reinterpret_cast<const void*>(&_t3)), const_cast<void*>(reinterpret_cast<const void*>(&_t4)) };
-    QMetaObject::activate(this, &staticMetaObject, 0, _a);
+    QMetaObject::activate(this, &staticMetaObject, 1, _a);
 }
 struct qt_meta_stringdata_WorkflowWorker_t {
     QByteArrayData data[18];

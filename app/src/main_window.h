@@ -30,7 +30,9 @@ public:
 private slots:
     void startDiscovery();
     void onDeviceFound(DeviceIdentity device);
-    void onUuidReadFinished(quint64 requestId, const QString& uuid, const QString& error, const QString& rawResponse);
+    void onDeviceDataProgress(quint64 requestId, int percent, const QString& stage);
+    void onDeviceDataFinished(quint64 requestId, DeviceIdentity identity,
+        const QStringList& warnings, const QString& rawResponse);
     void onDiscoveryFinished();
     void updateLineMode();
     void updateBulkMenu();
@@ -82,25 +84,32 @@ private:
     void setDevicesBusy(const QVector<std::shared_ptr<DeviceBase>>& devices, bool busy);
     void setBusy(bool busy);
     void setActionBusy(bool busy);
+    void updateDeviceDataProgress();
     QString workflowStageText(const QString& operation, const QString& stage) const;
+    QString logFilePath() const;
+    void appendFileLog(const QString& category, const QString& message) const;
 
     ServiceContainer* mServices = nullptr;
     DeviceFactory mDeviceFactory;
 
-    struct PendingUuidRead
+    struct PendingDeviceDataRead
     {
         std::shared_ptr<DeviceBase> device;
         quint64 discoveryGeneration = 0;
         QString endpointKey;
+        int progress = 0;
+        QString stage;
     };
 
     QVector<std::shared_ptr<DeviceBase>> mDevices;
-    QHash<quint64, PendingUuidRead> mPendingUuidReads;
-    QSet<QString> mPendingUuidEndpoints;
-    QSet<QThread*> mUuidThreads;
+    QHash<quint64, PendingDeviceDataRead> mPendingDeviceDataReads;
+    QSet<QString> mDeviceDataEndpoints;
+    QSet<QThread*> mDeviceDataThreads;
     QSet<const DeviceBase*> mBusyDevices;
-    quint64 mNextUuidRequestId = 1;
+    quint64 mNextDeviceDataRequestId = 1;
     quint64 mDiscoveryGeneration = 0;
+    int mDeviceDataTotal = 0;
+    int mDeviceDataCompleted = 0;
     QThread* mWorkflowThread = nullptr;
 
     QComboBox* mLineMode = nullptr;
@@ -124,6 +133,8 @@ private:
     QVector<QLabel*> mWorkflowStageLabels;
     QVector<QProgressBar*> mWorkflowProgressBars;
     QTableWidget* mDiscoveryTable = nullptr;
+    QLabel* mDeviceDataProgressLabel = nullptr;
+    QProgressBar* mDeviceDataProgressBar = nullptr;
     QTableWidget* mFirmwareTable = nullptr;
     QTableWidget* mProductionDateTable = nullptr;
     QTableWidget* mSerialNumberTable = nullptr;

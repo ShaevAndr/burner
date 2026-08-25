@@ -528,6 +528,44 @@ bool sendRequestNoReply(const DeviceIdentity& device, const QByteArray& request,
     return openAndSend(socket, host, port, request, error);
 }
 
+bool readTypeVersionDescription(const DeviceIdentity& device,
+    quint16* type,
+    quint16* version,
+    QString* description,
+    QString* error,
+    QString* rawResponse)
+{
+    QByteArray responseBody;
+    const QByteArray request = buildAsciiPacket(quint8(device.modbusAddress), 0xFF, 0, QByteArray());
+    if (!sendRequest(device, request, {0xFF}, &responseBody, error, rawResponse))
+        return false;
+    if (responseBody.size() < 4)
+    {
+        if (error)
+            *error = QStringLiteral("Type/version response is too short");
+        return false;
+    }
+
+    const quint16 foundType = (quint16(quint8(responseBody.at(0))) << 8)
+        | quint16(quint8(responseBody.at(1)));
+    const quint16 foundVersion = (quint16(quint8(responseBody.at(2))) << 8)
+        | quint16(quint8(responseBody.at(3)));
+    const QString foundDescription = decodeDiscoveryText(responseBody.mid(4));
+    if (foundDescription.isEmpty())
+    {
+        if (error)
+            *error = QStringLiteral("Type/version response has no device description");
+        return false;
+    }
+    if (type)
+        *type = foundType;
+    if (version)
+        *version = foundVersion;
+    if (description)
+        *description = foundDescription;
+    return true;
+}
+
 class UnicornAsciiTransport final : public IDeviceTransport
 {
 public:
@@ -616,6 +654,108 @@ public:
         }
         if (uuid)
             *uuid = value;
+        return true;
+    }
+
+    bool readIdentityDescription(const DeviceIdentity& device,
+        quint16* type,
+        quint16* version,
+        QString* description,
+        QString* error,
+        QString* rawResponse = nullptr) override
+    {
+        return readTypeVersionDescription(device, type, version, description, error, rawResponse);
+    }
+
+    bool readExtendedDescription(const DeviceIdentity& device,
+        QByteArray* description,
+        const std::function<void(int)>& progress,
+        QString* error,
+        QString* rawResponse = nullptr) override
+    {
+        constexpr int kFragmentSize = 512;
+        constexpr int kMaximumDescriptionSize = 4 * 1024 * 1024;
+        QByteArray result;
+        int offset = 0;
+        int totalSize = -1;
+        int fragments = 0;
+        if (progress)
+            progress(0);
+
+        do
+        {
+            QByteArray requestBody;
+            requestBody.reserve(8);
+            appendInt32(&requestBody, offset);
+            appendInt32(&requestBody, kFragmentSize);
+
+            QByteArray responseBody;
+            QString fragmentError;
+            const QByteArray request = buildAsciiPacket(
+                quint8(device.modbusAddress), 0xEE, 0, requestBody);
+            if (!sendRequest(device, request, {0xEE}, &responseBody,
+                    &fragmentError, nullptr))
+            {
+                if (error)
+                    *error = fragmentError;
+                return false;
+            }
+            if (responseBody.size() < 16)
+            {
+                if (error)
+                    *error = QStringLiteral("Extended description response is too short");
+                return false;
+            }
+
+            qint32 responseOffset = -1;
+            qint32 segmentSize = -1;
+            qint32 responseTotalSize = -1;
+            if (!readInt32(responseBody, 0, &responseOffset)
+                || !readInt32(responseBody, 4, &segmentSize)
+                || !readInt32(responseBody, 8, &responseTotalSize))
+            {
+                if (error)
+                    *error = QStringLiteral("Bad extended description response header");
+                return false;
+            }
+            if (responseOffset != offset || segmentSize < 0
+                || responseTotalSize < 0 || responseTotalSize > kMaximumDescriptionSize
+                || responseBody.size() < 12 + segmentSize + 4
+                || (segmentSize == 0 && responseOffset < responseTotalSize))
+            {
+                if (error)
+                    *error = QStringLiteral("Invalid extended description fragment at offset %1")
+                        .arg(offset);
+                return false;
+            }
+            if (totalSize >= 0 && totalSize != responseTotalSize)
+            {
+                if (error)
+                    *error = QStringLiteral("Extended description size changed while reading");
+                return false;
+            }
+
+            totalSize = responseTotalSize;
+            result.append(responseBody.mid(12, segmentSize));
+            offset += segmentSize;
+            ++fragments;
+            if (offset > totalSize)
+            {
+                if (error)
+                    *error = QStringLiteral("Extended description exceeds its declared size");
+                return false;
+            }
+            if (progress)
+                progress(totalSize > 0 ? qMin(100, (offset * 100) / totalSize) : 100);
+        }
+        while (offset < totalSize);
+
+        if (description)
+            *description = result;
+        if (rawResponse)
+            *rawResponse = QStringLiteral("0xEE extended description: %1 byte(s), %2 fragment(s)")
+                .arg(result.size())
+                .arg(fragments);
         return true;
     }
 
@@ -782,6 +922,58 @@ public:
         QString lastCandidate;
         QString lastRejection;
         const bool identifyByUuid = !expected.uuid.trimmed().isEmpty();
+        auto acceptCandidate = [&](DeviceIdentity found, const QString& candidateRaw) {
+            lastCandidate = QStringLiteral("%1 %2 '%3' serial '%4'")
+                .arg(found.typeHex(), found.versionHex(), found.description, found.serialNumber);
+            if (identifyByUuid && found.uuid.compare(expected.uuid, Qt::CaseInsensitive) != 0)
+            {
+                lastRejection = QStringLiteral("UUID %1 does not match expected %2")
+                    .arg(found.uuid, expected.uuid);
+                return false;
+            }
+
+            // UUID is the stable device identity across resets, firmware changes
+            // and service-data updates. Do not reject that same device because
+            // its serial field changed while it was offline. Serial remains a
+            // fallback discriminator only for devices without UUID support.
+            if (!identifyByUuid
+                && !expected.serialNumber.isEmpty() && !found.serialNumber.isEmpty()
+                && expected.serialNumber != found.serialNumber)
+            {
+                lastRejection = QStringLiteral("serial '%1' does not match '%2'")
+                    .arg(found.serialNumber, expected.serialNumber);
+                return false;
+            }
+            if (expected.type != 0
+                && (found.type != expected.type || found.version != expected.version))
+            {
+                lastRejection = QStringLiteral("type/version does not match");
+                return false;
+            }
+            const bool bootDescription = descriptionContainsBoot(found.description);
+            if (expected.state == QStringLiteral("bootloader") && !bootDescription)
+            {
+                lastRejection = QStringLiteral("description has no (Boot) marker");
+                return false;
+            }
+            if (expected.state == QStringLiteral("application") && bootDescription)
+            {
+                lastRejection = QStringLiteral("description still has (Boot) marker");
+                return false;
+            }
+
+            found.state = bootDescription
+                ? QStringLiteral("bootloader")
+                : QStringLiteral("application");
+            if (rawResponse)
+                *rawResponse = QStringLiteral("discovered %1 %2 %3 at %4 UUID=%5%6")
+                    .arg(found.typeHex(), found.versionHex(), found.description,
+                        found.endpoint, found.uuid,
+                        candidateRaw.isEmpty() ? QString() : QStringLiteral("\n%1").arg(candidateRaw));
+            if (identity)
+                *identity = found;
+            return true;
+        };
         while (elapsed.elapsed() < effectiveTimeout)
         {
             if (elapsed.elapsed() >= nextSendAt)
@@ -789,6 +981,47 @@ public:
                 if (!sendDiscovery(&socket, expectedAddress) && rawResponse)
                     *rawResponse = QStringLiteral("UDP discovery send failed: %1").arg(socket.errorString());
                 nextSendAt = elapsed.elapsed() + effectivePoll;
+
+                // UDP discovery can be lost while the network stack is starting.
+                // Once UUID is known, probe the last endpoint directly as well;
+                // UUID validation prevents accepting a different device that took
+                // over the old address.
+                if (identifyByUuid)
+                {
+                    DeviceIdentity direct = expected;
+                    quint16 directType = 0;
+                    quint16 directVersion = 0;
+                    QString directDescription;
+                    QString directError;
+                    QString directRaw;
+                    if (readTypeVersionDescription(direct, &directType, &directVersion,
+                            &directDescription, &directError, &directRaw))
+                    {
+                        direct.type = directType;
+                        direct.version = directVersion;
+                        direct.description = directDescription;
+                        direct.serialNumber.clear();
+                        QString directUuid;
+                        QString uuidError;
+                        QString uuidRaw;
+                        if (readUuid(direct, &directUuid, &uuidError, &uuidRaw))
+                        {
+                            direct.uuid = directUuid;
+                            if (acceptCandidate(direct,
+                                    QStringLiteral("direct TCP identity\n%1\n%2")
+                                        .arg(directRaw, uuidRaw)))
+                                return true;
+                        }
+                        else
+                        {
+                            lastRejection = QStringLiteral("direct UUID read failed: %1").arg(uuidError);
+                        }
+                    }
+                    else
+                    {
+                        lastRejection = QStringLiteral("direct identity read failed: %1").arg(directError);
+                    }
+                }
             }
 
             const int waitMs = qMin(effectivePoll, effectiveTimeout - int(elapsed.elapsed()));
@@ -816,8 +1049,17 @@ public:
                         .arg(sender.toString()).arg(datagram.size());
                     continue;
                 }
-                lastCandidate = QStringLiteral("%1 %2 '%3' serial '%4'")
-                    .arg(found.typeHex(), found.versionHex(), found.description, found.serialNumber);
+                quint16 fullType = 0;
+                quint16 fullVersion = 0;
+                QString fullDescription;
+                QString descriptionError;
+                if (readTypeVersionDescription(found, &fullType, &fullVersion,
+                        &fullDescription, &descriptionError, nullptr))
+                {
+                    found.type = fullType;
+                    found.version = fullVersion;
+                    found.description = fullDescription;
+                }
 
                 QString foundUuid;
                 QString uuidError;
@@ -828,38 +1070,8 @@ public:
                     continue;
                 }
                 found.uuid = foundUuid;
-                if (identifyByUuid && found.uuid.compare(expected.uuid, Qt::CaseInsensitive) != 0)
-                {
-                    lastRejection = QStringLiteral("UUID %1 does not match expected %2")
-                        .arg(found.uuid, expected.uuid);
-                    continue;
-                }
-
-                if (!expected.serialNumber.isEmpty() && !found.serialNumber.isEmpty()
-                    && expected.serialNumber != found.serialNumber)
-                {
-                    lastRejection = QStringLiteral("serial '%1' does not match '%2'")
-                        .arg(found.serialNumber, expected.serialNumber);
-                    continue;
-                }
-                if (expected.type != 0
-                    && (found.type != expected.type || found.version != expected.version))
-                {
-                    lastRejection = QStringLiteral("type/version does not match");
-                    continue;
-                }
-                if (expected.state == QStringLiteral("bootloader") && !descriptionContainsBoot(found.description))
-                {
-                    lastRejection = QStringLiteral("description has no (Boot) marker");
-                    continue;
-                }
-
-                if (rawResponse)
-                    *rawResponse = QStringLiteral("discovered %1 %2 %3 at %4 UUID=%5\n%6")
-                        .arg(found.typeHex(), found.versionHex(), found.description, found.endpoint, found.uuid, uuidRaw);
-                if (identity)
-                    *identity = found;
-                return true;
+                if (acceptCandidate(found, uuidRaw))
+                    return true;
             }
         }
 

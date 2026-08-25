@@ -9,17 +9,18 @@
 #include <QVariantMap>
 #include <memory>
 
-class UuidWorker : public QObject
+class DeviceDataWorker : public QObject
 {
     Q_OBJECT
 public:
-    UuidWorker(quint64 requestId, std::shared_ptr<DeviceBase> device, QObject* parent = nullptr);
+    DeviceDataWorker(quint64 requestId, std::shared_ptr<DeviceBase> device, QObject* parent = nullptr);
 
 public slots:
     void run();
 
 signals:
-    void finished(quint64 requestId, QString uuid, QString error, QString rawResponse);
+    void progressChanged(quint64 requestId, int percent, QString stage);
+    void finished(quint64 requestId, DeviceIdentity identity, QStringList warnings, QString rawResponse);
 
 private:
     quint64 mRequestId = 0;

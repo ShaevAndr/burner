@@ -44,6 +44,10 @@ struct WorkflowContext
     FirmwareVersionSpec targetFirmware;
     QString targetFirmwareId;
     DeviceIdentity reappearedIdentity;
+    qint32 preservedProductionDate = 0;
+    qint32 preservedSerialNumber = 0;
+    bool hasPreservedProductionDate = false;
+    bool hasPreservedSerialNumber = false;
     bool transitionValidated = false;
     bool flashWritten = false;
     QString transportError;

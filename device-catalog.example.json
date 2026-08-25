@@ -47,7 +47,8 @@
         "device.ping",
         "flash.application.write",
         "device.productionDate.update",
-        "device.serialNumber.update"
+        "device.serialNumber.update",
+        "device.application.load"
       ],
       "deviceClass": "DeviceBase"
     }
@@ -101,18 +102,17 @@
           "id": "sw-2026-08-20_15:53",
           "title": "БОЦ-В-6 2026-08-20 15:53",
           "version": "2026-08-20 15:53",
-          "descriptionRegex": "\\(SW Aug 20 2026 16:$"
+          "descriptionRegex": "\\(SW Aug 20 2026 15:53(?::[0-9]{2})?\\)$"
         },
         {
           "id": "sw-2026-08-20-16-26-49",
           "title": "БОЦ-В-6 ADC Vibr Digital",
           "version": "2026-08-20 16:26:49",
-          "descriptionRegex": "\\(SW Aug 20 2026 16:$",
-          "detectFromDescription": false,
+          "descriptionRegex": "\\(SW Aug 20 2026 16:26:49\\)$",
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260820_1627.hex",
-            "sha256": "797EA8D66D9476D02F2760B400B85EDF1CCABC3E46C4ADCE2AB498E7D2B3032B",
+            "sha256": "8E4D05AB4D912C0EE120EFC4542B7560B051D90F699B317E51F49BA875677771",
             "format": "intelHex",
             "addressBase": "0x08040000",
             "flashNum": 1
@@ -126,7 +126,7 @@
           "id": "sw-2026-08-21-11-14-34",
           "title": "БОЦ-В-6 ADC Vibr Digital",
           "version": "2026-08-21 11:14:34",
-          "descriptionRegex": "\\(SW Aug 21 2026 11:$",
+          "descriptionRegex": "\\(SW Aug 21 2026 11:14:34\\)$",
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260821_1114.hex",
