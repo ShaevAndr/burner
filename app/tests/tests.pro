@@ -18,6 +18,7 @@ SOURCES += \
 
 HEADERS += \
     ../src/action_repository.h \
+    ../src/app_edition.h \
     ../src/base_device.h \
     ../src/catalog.h \
     ../src/device.h \

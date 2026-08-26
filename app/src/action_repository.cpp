@@ -1,4 +1,5 @@
 #include "action_repository.h"
+#include "app_edition.h"
 #include "base_device.h"
 
 #include <QFile>
@@ -52,7 +53,7 @@ bool ActionRepository::load(const QString& fileName, QString* error)
                 action.target = input.value(QStringLiteral("target")).toString();
         }
 
-        if (!action.id.isEmpty())
+        if (!action.id.isEmpty() && AppEdition::allowsAction(action.id))
             mActions.append(action);
     }
     return true;

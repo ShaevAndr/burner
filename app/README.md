@@ -1,21 +1,50 @@
 # Device Workbench
 
-Qt Widgets MVP для поиска устройств и запуска двух flash-команд.
+Исходный код Qt-приложения. Проект собирается в двух редакциях из общей кодовой базы:
 
-## Build
+- `device-workbench-internal.pro` — внутренняя версия со всеми функциями;
+- `device-workbench-external.pro` — внешняя версия для поиска и прошивки устройств.
 
-```bash
-qmake device-workbench.pro -o Makefile
-make -j2
+Во внешней версии не создаются страницы смены даты и номера. Эти действия также
+отфильтрованы в репозитории действий и отклоняются исполнителем workflow.
+
+## Структура
+
+- `app/src` — C++-код;
+- `app/config` — каталог устройств, действия и workflow;
+- `app/flash` — образы прошивок;
+- `app/tests` — автоматические тесты;
+- `build/internal`, `build/external` — временные файлы компиляции (не хранятся в Git);
+- `releases/internal`, `releases/external` — готовые переносимые сборки.
+
+## Сборка обеих редакций
+
+Из корня репозитория:
+
+```powershell
+.\scripts\build-releases.ps1 -Clean
 ```
 
-## Run
+Только одна редакция:
 
-```bash
-./device-workbench
+```powershell
+.\scripts\build-releases.ps1 -Edition internal
+.\scripts\build-releases.ps1 -Edition external
 ```
 
-Конфигурация лежит в `config/device-catalog.json` и `config/actions.json`.
-Бинарники прошивок лежат в `flash/`, а относительные пути и SHA-256 указаны в
-`device-catalog.json`.
+Скрипт запускает `qmake`, `mingw32-make`, `windeployqt`, а затем копирует в релиз
+актуальные каталоги `config` и `flash`. Обычный `device-workbench.pro` оставлен как
+совместимый псевдоним внутренней редакции.
+
+## Тесты
+
+```powershell
+qmake app/tests/tests.pro -o build/tests/Makefile
+mingw32-make -C build/tests -j4
+build/tests/release/device-workbench-tests.exe
+```
+
+Ограничения внешней редакции проверяются отдельным быстрым тестом
+`app/tests/external-edition.pro`.
+
 Архитектура описана в `docs/architecture.md`.

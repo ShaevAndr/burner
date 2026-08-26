@@ -1,3 +1,4 @@
+#include "app_edition.h"
 #include "main_window.h"
 #include "service_container.h"
 
@@ -7,7 +8,7 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QApplication::setApplicationName(QStringLiteral("Device Workbench"));
+    QApplication::setApplicationName(AppEdition::displayName());
     QApplication::setOrganizationName(QStringLiteral("Burner"));
 
     ServiceContainer services;

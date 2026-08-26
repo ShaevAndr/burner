@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "actions": [
+    {
+      "id": "flash.application.write",
+      "title": "Прошить application",
+      "selection": "many",
+      "dangerLevel": "high",
+      "when": {
+        "capabilitiesAll": ["flash.application.write"]
+      },
+      "inputs": [
+        {
+          "name": "artifact",
+          "type": "firmwareArtifact",
+          "target": "application",
+          "required": true
+        }
+      ],
+      "workflow": "firmware.application.standard"
+    },
+    {
+      "id": "flash.bootloader.write",
+      "title": "Записать bootloader flash",
+      "selection": "many",
+      "dangerLevel": "high",
+      "when": {
+        "capabilitiesAll": ["flash.bootloader.write"]
+      },
+      "inputs": [
+        {
+          "name": "artifact",
+          "type": "firmwareArtifact",
+          "target": "bootloader",
+          "required": true
+        },
+        {
+          "name": "verifyAfterWrite",
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "workflow": "flash.write"
+    },
+    {
+      "id": "device.productionDate.update",
+      "title": "Обновить дату производства",
+      "selection": "many",
+      "dangerLevel": "medium",
+      "when": {
+        "capabilitiesAll": ["device.productionDate.update"]
+      },
+      "inputs": [
+        {
+          "name": "productionDate",
+          "type": "date",
+          "required": true
+        }
+      ],
+      "workflow": "device.production-date.update"
+    },
+    {
+      "id": "device.serialNumber.update",
+      "title": "Изменить номер устройства",
+      "selection": "single",
+      "dangerLevel": "medium",
+      "when": {
+        "capabilitiesAll": ["device.serialNumber.update"]
+      },
+      "inputs": [
+        {
+          "name": "serialNumber",
+          "type": "integer",
+          "required": true
+        }
+      ],
+      "workflow": "device.serial-number.update"
+    },
+    {
+      "id": "device.application.load",
+      "title": "Загрузить основное приложение",
+      "selection": "many",
+      "dangerLevel": "medium",
+      "when": {
+        "capabilitiesAll": ["device.application.load"],
+        "statesAny": ["bootloader"]
+      },
+      "inputs": [],
+      "workflow": "device.application.load"
+    },
+    {
+      "id": "device.ping",
+      "title": "Ping int[0]",
+      "selection": "single",
+      "dangerLevel": "low",
+      "when": {
+        "capabilitiesAll": ["device.ping"]
+      },
+      "inputs": [],
+      "workflow": "device.ping"
+    }
+  ]
+}

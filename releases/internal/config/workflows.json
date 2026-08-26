@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 1,
+  "workflows": [
+    {
+      "id": "device.production-date.update",
+      "steps": [
+        {
+          "op": "context.productionDate"
+        },
+        {
+          "op": "device.reset",
+          "message": "reset device to enter bootloader"
+        },
+        {
+          "op": "sleep",
+          "message": "wait 3 seconds after reset before polling bootloader",
+          "ms": 5000
+        },
+        {
+          "op": "device.connect",
+          "state": "bootloader",
+          "message": "waiting for device reappearance with (Boot) in description",
+          "ms": 1200,
+          "settleMs": 1500
+        },
+        {
+          "op": "sleep",
+          "message": "wait 3 seconds after reset before polling bootloader",
+          "ms": 5000
+        },
+        {
+          "op": "device.disableLoadApplication",
+          "label": "int[0]",
+          "message": "int[0] = 0",
+          "retry": 4
+        },
+        {
+          "op": "device.writeProductionDate",
+          "label": "production date",
+          "message": "int[9] = {value}",
+          "valueFrom": "productionDate",
+          "retry": 4
+        },
+        {
+          "op": "sleep",
+          "message": "wait 1 second before final reset",
+          "ms": 1000
+        },
+        {
+          "op": "device.loadApplicationNoReply",
+          "label": "load application",
+          "message": "load main application, response is not expected",
+          "retry": 2
+        },
+        {
+          "op": "device.waitForApplication",
+          "timeoutMs": 30000,
+          "pollIntervalMs": 500,
+          "retryLoadAttempts": 1,
+          "retryDelayMs": 1000
+        },
+        {
+          "op": "log",
+          "message": "production date update finished"
+        }
+      ]
+    },
+    {
+      "id": "device.serial-number.update",
+      "steps": [
+        {
+          "op": "context.serialNumber"
+        },
+        {
+          "op": "device.reset",
+          "message": "reset device to enter bootloader",
+          "skipIfState": "bootloader",
+          "skippedLog": "device is already in bootloader mode"
+        },
+        {
+          "op": "sleep",
+          "message": "wait 3 seconds after reset before polling bootloader",
+          "ms": 3000,
+          "skipIfState": "bootloader"
+        },
+        {
+          "op": "device.connect",
+          "state": "bootloader",
+          "message": "waiting for device reappearance with (Boot) in description",
+          "ms": 1200,
+          "settleMs": 1500,
+          "skipIfState": "bootloader"
+        },
+        {
+          "op": "device.disableLoadApplication",
+          "label": "int[0]",
+          "message": "int[0] = 0",
+          "retry": 4
+        },
+        {
+          "op": "device.writeSerialNumber",
+          "label": "serial number",
+          "message": "int[10] = {value}",
+          "valueFrom": "serialNumber",
+          "retry": 4
+        },
+        {
+          "op": "sleep",
+          "message": "wait 1 second before final reset",
+          "ms": 1000
+        },
+        {
+          "op": "device.loadApplicationNoReply",
+          "label": "load application",
+          "message": "load main application, response is not expected",
+          "retry": 2
+        },
+        {
+          "op": "device.waitForApplication",
+          "timeoutMs": 30000,
+          "pollIntervalMs": 500,
+          "retryLoadAttempts": 1,
+          "retryDelayMs": 1000
+        },
+        {
+          "op": "log",
+          "message": "serial number update finished"
+        }
+      ]
+    },
+    {
+      "id": "device.application.load",
+      "steps": [
+        {
+          "op": "device.loadApplicationNoReply",
+          "label": "load application",
+          "message": "int[0] = 1, response is not expected"
+        },
+        {
+          "op": "device.waitForApplication",
+          "timeoutMs": 30000,
+          "pollIntervalMs": 500,
+          "retryLoadAttempts": 1,
+          "retryDelayMs": 1000
+        },
+        {
+          "op": "log",
+          "message": "load application workflow finished"
+        }
+      ]
+    },
+    {
+      "id": "firmware.application.standard",
+      "steps": [
+        {
+          "op": "device.ensureUuid"
+        },
+        {
+          "op": "firmware.validateTransition"
+        },
+        {
+          "op": "device.enterBootloader",
+          "timeoutMs": 15000,
+          "pollIntervalMs": 500,
+          "settleMs": 250
+        },
+        {
+          "op": "device.disableApplicationLoad"
+        },
+        {
+          "op": "firmware.validateArtifact"
+        },
+        {
+          "op": "firmware.flash"
+        },
+        {
+          "op": "firmware.verify"
+        },
+        {
+          "op": "device.loadApplicationNoReply",
+          "message": "load main application, response is not expected",
+          "retry": 2
+        },
+        {
+          "op": "device.waitForApplication",
+          "timeoutMs": 30000,
+          "pollIntervalMs": 500,
+          "retryLoadAttempts": 1,
+          "retryDelayMs": 1000
+        },
+        {
+          "op": "firmware.verifyInstalledVersion"
+        },
+        {
+          "op": "firmware.complete"
+        },
+        {
+          "op": "workflow.finish"
+        }
+      ]
+    },
+    {
+      "id": "flash.write",
+      "steps": [
+        {
+          "op": "flash.prepare"
+        },
+        {
+          "op": "flash.validateArtifact"
+        },
+        {
+          "op": "flash.preflight"
+        },
+        {
+          "op": "firmware.flash"
+        },
+        {
+          "op": "firmware.verify"
+        },
+        {
+          "op": "flash.complete"
+        },
+        {
+          "op": "workflow.finish"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 #include "workflow.h"
+#include "app_edition.h"
 #include "workflow_definition.h"
 
 #include <QCoreApplication>
@@ -38,6 +39,14 @@ void WorkflowRunner::setWorkflowRepository(WorkflowRepository* workflows)
 bool WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters)
 {
     emit logMessage(QStringLiteral("Starting %1 for %2 device(s)").arg(action.id).arg(devices.size()));
+
+    if (!AppEdition::allowsAction(action.id))
+    {
+        emit logMessage(QStringLiteral("Action %1 is not available in the %2 edition")
+            .arg(action.id, AppEdition::id()));
+        emit failureStage(QStringLiteral("edition.action"), action.id);
+        return false;
+    }
 
     if (requiresFactorySettingsKey(action.id) && !hasFactorySettingsKey(parameters))
     {

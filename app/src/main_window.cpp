@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "app_edition.h"
 #include "workers.h"
 
 #include <QCheckBox>
@@ -282,7 +283,7 @@ MainWindow::~MainWindow()
 void MainWindow::buildUi()
 {
     resize(1280, 760);
-    setWindowTitle(QStringLiteral("Device Workbench"));
+    setWindowTitle(AppEdition::displayName());
 
     QWidget* root = new QWidget(this);
     QHBoxLayout* rootLayout = new QHBoxLayout(root);
@@ -294,8 +295,11 @@ void MainWindow::buildUi()
     mPages->setObjectName(QStringLiteral("main"));
     mPages->addWidget(buildDiscoveryPage());
     mPages->addWidget(buildFirmwarePage());
-    mPages->addWidget(buildProductionDatePage());
-    mPages->addWidget(buildSerialNumberPage());
+    if (AppEdition::isInternal())
+    {
+        mPages->addWidget(buildProductionDatePage());
+        mPages->addWidget(buildSerialNumberPage());
+    }
     rootLayout->addWidget(mPages, 1);
 
     connect(mDiscoveryTabButton, &QPushButton::clicked, this, [this]() {
@@ -304,12 +308,18 @@ void MainWindow::buildUi()
     connect(mFirmwareTabButton, &QPushButton::clicked, this, [this]() {
         showPage(FirmwarePage);
     });
-    connect(mProductionDateButton, &QPushButton::clicked, this, [this]() {
-        showPage(ProductionDatePage);
-    });
-    connect(mSerialNumberButton, &QPushButton::clicked, this, [this]() {
-        showPage(SerialNumberPage);
-    });
+    if (mProductionDateButton)
+    {
+        connect(mProductionDateButton, &QPushButton::clicked, this, [this]() {
+            showPage(ProductionDatePage);
+        });
+    }
+    if (mSerialNumberButton)
+    {
+        connect(mSerialNumberButton, &QPushButton::clicked, this, [this]() {
+            showPage(SerialNumberPage);
+        });
+    }
     showPage(DiscoveryPage);
     setCentralWidget(root);
 
@@ -364,19 +374,22 @@ QWidget* MainWindow::buildSidebar()
     layout->addWidget(mDiscoveryTabButton);
     layout->addWidget(mFirmwareTabButton);
 
-    QLabel* actionsLabel = new QLabel(QStringLiteral("Действия с устройствами"));
-    actionsLabel->setObjectName(QStringLiteral("brandSub"));
-    layout->addWidget(actionsLabel);
-    mProductionDateButton = new QPushButton(QStringLiteral("Смена даты производства"));
-    mProductionDateButton->setObjectName(QStringLiteral("nav"));
-    mProductionDateButton->setCheckable(true);
-    mProductionDateButton->setToolTip(QStringLiteral("Открыть таблицу смены даты производства"));
-    mSerialNumberButton = new QPushButton(QStringLiteral("Смена номера устройства"));
-    mSerialNumberButton->setObjectName(QStringLiteral("nav"));
-    mSerialNumberButton->setCheckable(true);
-    mSerialNumberButton->setToolTip(QStringLiteral("Открыть таблицу индивидуальной смены номера"));
-    layout->addWidget(mProductionDateButton);
-    layout->addWidget(mSerialNumberButton);
+    if (AppEdition::isInternal())
+    {
+        QLabel* actionsLabel = new QLabel(QStringLiteral("Действия с устройствами"));
+        actionsLabel->setObjectName(QStringLiteral("brandSub"));
+        layout->addWidget(actionsLabel);
+        mProductionDateButton = new QPushButton(QStringLiteral("Смена даты производства"));
+        mProductionDateButton->setObjectName(QStringLiteral("nav"));
+        mProductionDateButton->setCheckable(true);
+        mProductionDateButton->setToolTip(QStringLiteral("Открыть таблицу смены даты производства"));
+        mSerialNumberButton = new QPushButton(QStringLiteral("Смена номера устройства"));
+        mSerialNumberButton->setObjectName(QStringLiteral("nav"));
+        mSerialNumberButton->setCheckable(true);
+        mSerialNumberButton->setToolTip(QStringLiteral("Открыть таблицу индивидуальной смены номера"));
+        layout->addWidget(mProductionDateButton);
+        layout->addWidget(mSerialNumberButton);
+    }
     layout->addStretch();
     updateNavigationActions();
     return sidebar;
@@ -781,8 +794,10 @@ void MainWindow::startDiscovery()
     mDevices.clear();
     mDiscoveryTable->setRowCount(0);
     mFirmwareTable->setRowCount(0);
-    mProductionDateTable->setRowCount(0);
-    mSerialNumberTable->setRowCount(0);
+    if (mProductionDateTable)
+        mProductionDateTable->setRowCount(0);
+    if (mSerialNumberTable)
+        mSerialNumberTable->setRowCount(0);
     updateBulkMenu();
     setBusy(true);
     if (mDeviceDataProgressLabel)
@@ -1031,8 +1046,10 @@ void MainWindow::showPage(int pageIndex)
     mPages->setCurrentIndex(pageIndex);
     mDiscoveryTabButton->setChecked(pageIndex == DiscoveryPage);
     mFirmwareTabButton->setChecked(pageIndex == FirmwarePage);
-    mProductionDateButton->setChecked(pageIndex == ProductionDatePage);
-    mSerialNumberButton->setChecked(pageIndex == SerialNumberPage);
+    if (mProductionDateButton)
+        mProductionDateButton->setChecked(pageIndex == ProductionDatePage);
+    if (mSerialNumberButton)
+        mSerialNumberButton->setChecked(pageIndex == SerialNumberPage);
 }
 
 void MainWindow::updateNavigationActions()
@@ -1598,8 +1615,10 @@ void MainWindow::addDeviceRow(const std::shared_ptr<DeviceBase>& device)
     const int row = mDevices.size() - 1;
     mDiscoveryTable->insertRow(row);
     mFirmwareTable->insertRow(row);
-    mProductionDateTable->insertRow(row);
-    mSerialNumberTable->insertRow(row);
+    if (mProductionDateTable)
+        mProductionDateTable->insertRow(row);
+    if (mSerialNumberTable)
+        mSerialNumberTable->insertRow(row);
     updateDeviceRow(row, device);
 }
 
@@ -1607,8 +1626,10 @@ void MainWindow::updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& dev
 {
     updateDiscoveryDeviceRow(row, device);
     updateFirmwareDeviceRow(row, device);
-    updateProductionDateDeviceRow(row, device);
-    updateSerialNumberDeviceRow(row, device);
+    if (mProductionDateTable)
+        updateProductionDateDeviceRow(row, device);
+    if (mSerialNumberTable)
+        updateSerialNumberDeviceRow(row, device);
 }
 
 bool MainWindow::isDeviceBusy(const std::shared_ptr<DeviceBase>& device) const

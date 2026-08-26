@@ -1,11 +1,30 @@
 # Build artifacts
-app/.qmake.stash
-app/Makefile
-app/*.o
-app/moc_*.cpp
-app/moc_*.o
-app/moc_predefs.h
-app/device-workbench
+/build/
+/build-*/
+/app/build/
+/app/debug/
+/app/release/
+/app/.qmake.stash
+/app/Makefile*
+/app/object_script.*
+/app/*.o
+/app/moc_*.cpp
+/app/moc_*.o
+/app/moc_predefs.h
+/app/device-workbench*
+!/app/device-workbench.pro
+!/app/device-workbench-common.pri
+!/app/device-workbench-internal.pro
+!/app/device-workbench-external.pro
+/app/tests/.qmake.stash
+/app/tests/Makefile*
+/app/tests/object_script.*
+/app/tests/debug/
+/app/tests/release/
+/app/tests/test-run.*
+/app/tests/test-results.txt
+/app/tests/network-result*.txt
+/releases/*/logs/
 
 # Reference application copied/provided for analysis, not part of this app.
 unicorn/
