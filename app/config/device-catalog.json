@@ -56,28 +56,18 @@
   "firmwareCatalogs": [
     {
       "deviceId": "boc.v12",
-      "artifacts": [
-        {
-          "target": "bootloader",
-          "title": "Bootloader test image",
-          "version": "test-1.0.0",
-          "relativePath": "flash/boc-v12/bootloader-test.bin",
-          "sha256": "5EEC959959CAF8E77CF0278898656A9EB974800955789F8B69C7CA32F3FAB40E",
-          "default": true,
-          "flashNum": 1,
-          "flashStrategy": "test-no-write"
-        }
-      ],
       "versions": [
         {
-          "id": "test-1.0.0",
-          "title": "Application test image",
-          "version": "test-1.0.0",
-          "descriptionRegex": "\\(SW Jul 15 2026 14:30:56\\)$",
+          "id": "sw-2026-07-16-09-24-19",
+          "title": "БОЦ-В-12 ADC Vibr Digital",
+          "version": "2026-07-16 09:24:19",
+          "descriptionRegex": "\\(SW Jul 16 2026 09:24:19\\)$",
           "artifact": {
             "target": "application",
-            "relativePath": "flash/boc-v12/application-test.bin",
-            "sha256": "3D3450432C1732B034F9A5DDBAD373DA920882CFBC8D931E316210DB567A20B6",
+            "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260818_1450.hex",
+            "sha256": "6B3944A16EBA01AB304CC267BA99F411A7197409EF84572065E0CB01DC665426",
+            "format": "intelHex",
+            "addressBase": "0x08000000",
             "default": true,
             "flashNum": 0
           },
@@ -89,8 +79,8 @@
       ],
       "transitions": [
         {
-          "from": "test-1.0.0",
-          "to": "test-1.0.0",
+          "from": "sw-2026-07-16-09-24-19",
+          "to": "sw-2026-07-16-09-24-19",
           "enabled": true
         }
       ]
@@ -99,38 +89,14 @@
       "deviceId": "boc.v6",
       "versions": [
         {
-          "id": "sw-2026-08-20_15:53",
-          "title": "БОЦ-В-6 2026-08-20 15:53",
-          "version": "2026-08-20 15:53",
-          "descriptionRegex": "\\(SW Aug 20 2026 15:53(?::[0-9]{2})?\\)$"
-        },
-        {
-          "id": "sw-2026-08-20-16-26-49",
+          "id": "sw-2026-08-31-10-01-24",
           "title": "БОЦ-В-6 ADC Vibr Digital",
-          "version": "2026-08-20 16:26:49",
-          "descriptionRegex": "\\(SW Aug 20 2026 16:26:49\\)$",
+          "version": "2026-08-31 10:01:24",
+          "descriptionRegex": "\\(SW Aug 31 2026 10:01:24\\)$",
           "artifact": {
             "target": "application",
-            "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260820_1627.hex",
-            "sha256": "8E4D05AB4D912C0EE120EFC4542B7560B051D90F699B317E51F49BA875677771",
-            "format": "intelHex",
-            "addressBase": "0x08040000",
-            "flashNum": 1
-          },
-          "installation": {
-            "workflow": "firmware.application.standard",
-            "strategy": "page-flash"
-          }
-        },
-        {
-          "id": "sw-2026-08-21-11-14-34",
-          "title": "БОЦ-В-6 ADC Vibr Digital",
-          "version": "2026-08-21 11:14:34",
-          "descriptionRegex": "\\(SW Aug 21 2026 11:14:34\\)$",
-          "artifact": {
-            "target": "application",
-            "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260821_1114.hex",
-            "sha256": "80AFF9B0934D6408563649F0F60C9C4C7EE8BA541DC0887D049363783B2BF33E",
+            "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260831_1007.hex",
+            "sha256": "71E07625773EBFC501250F2D3924AF3714050B5D408CE0F42134CCCE2FDAFAEB",
             "format": "intelHex",
             "addressBase": "0x08040000",
             "default": true,
@@ -144,23 +110,8 @@
       ],
       "transitions": [
         {
-          "from": "sw-2026-08-20_15:53",
-          "to": "sw-2026-08-20-16-26-49",
-          "enabled": true
-        },
-        {
-          "from": "sw-2026-08-20_15:53",
-          "to": "sw-2026-08-21-11-14-34",
-          "enabled": true
-        },
-        {
-          "from": "sw-2026-08-20-16-26-49",
-          "to": "sw-2026-08-21-11-14-34",
-          "enabled": true
-        },
-        {
-          "from": "sw-2026-08-21-11-14-34",
-          "to": "sw-2026-08-20-16-26-49",
+          "from": "sw-2026-08-31-10-01-24",
+          "to": "sw-2026-08-31-10-01-24",
           "enabled": true
         }
       ]

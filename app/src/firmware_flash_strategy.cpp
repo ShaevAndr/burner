@@ -1,5 +1,6 @@
 #include "firmware_flash_strategy.h"
 
+#include <QMap>
 #include <QThread>
 #include <algorithm>
 
@@ -7,24 +8,29 @@ namespace
 {
 struct IntelHexImage
 {
-    QByteArray data;
+    QMap<int, QByteArray> pages;
+    int dataBytes = 0;
     int ignoredBytes = 0;
 };
 
 bool parseIntelHex(const QByteArray& fileData,
     quint32 addressBase,
-    int maxImageSize,
+    int flashSize,
+    int flashOffset,
+    int pageSize,
     IntelHexImage* image,
     QString* error)
 {
-    if (!image || maxImageSize <= 0)
+    if (!image || flashSize <= 0 || flashOffset < 0
+        || flashOffset >= flashSize || pageSize <= 0)
     {
         if (error)
             *error = QStringLiteral("Invalid Intel HEX target range");
         return false;
     }
 
-    image->data.clear();
+    image->pages.clear();
+    image->dataBytes = 0;
     image->ignoredBytes = 0;
     quint32 upperAddress = 0;
     bool eofSeen = false;
@@ -79,17 +85,27 @@ bool parseIntelHex(const QByteArray& fileData,
         {
             const quint64 absoluteAddress = quint64(upperAddress) + offset;
             const quint64 rangeBegin = addressBase;
-            const quint64 rangeEnd = rangeBegin + quint64(maxImageSize);
+            const quint64 rangeEnd = rangeBegin + quint64(flashSize - flashOffset);
             const quint64 recordEnd = absoluteAddress + quint64(byteCount);
             if (absoluteAddress >= rangeBegin && recordEnd <= rangeEnd)
             {
-                const int relativeAddress = int(absoluteAddress - rangeBegin);
-                const int requiredSize = relativeAddress + byteCount;
-                if (requiredSize > image->data.size())
-                    image->data.append(QByteArray(requiredSize - image->data.size(), char(0xFF)));
-                std::copy(record.constBegin() + 4,
-                    record.constBegin() + 4 + byteCount,
-                    image->data.begin() + relativeAddress);
+                int targetAddress = flashOffset + int(absoluteAddress - rangeBegin);
+                int sourceOffset = 0;
+                while (sourceOffset < byteCount)
+                {
+                    const int pageNum = targetAddress / pageSize;
+                    const int pageOffset = targetAddress % pageSize;
+                    const int chunkSize = qMin(byteCount - sourceOffset, pageSize - pageOffset);
+                    auto pageIt = image->pages.find(pageNum);
+                    if (pageIt == image->pages.end())
+                        pageIt = image->pages.insert(pageNum, QByteArray(pageSize, char(0xFF)));
+                    std::copy(record.constBegin() + 4 + sourceOffset,
+                        record.constBegin() + 4 + sourceOffset + chunkSize,
+                        pageIt.value().begin() + pageOffset);
+                    sourceOffset += chunkSize;
+                    targetAddress += chunkSize;
+                }
+                image->dataBytes += byteCount;
             }
             else if (recordEnd <= rangeBegin || absoluteAddress >= rangeEnd)
             {
@@ -123,7 +139,7 @@ bool parseIntelHex(const QByteArray& fileData,
         }
     }
 
-    if (!eofSeen || image->data.isEmpty())
+    if (!eofSeen || image->pages.isEmpty())
     {
         if (error)
             *error = !eofSeen
@@ -194,55 +210,80 @@ public:
         const bool isIntelHex = plan.artifact.format.compare(QStringLiteral("intelHex"), Qt::CaseInsensitive) == 0
             || plan.fileName.endsWith(QStringLiteral(".hex"), Qt::CaseInsensitive)
             || plan.fileName.endsWith(QStringLiteral(".ldr"), Qt::CaseInsensitive);
+        plan.expectedPageNumbers.clear();
+        plan.expectedPages.clear();
         if (isIntelHex)
         {
-            const int maxImageSize = pagesCount * plan.pageSize - plan.offset;
+            const int flashSize = pagesCount * plan.pageSize;
             IntelHexImage image;
-            if (!parseIntelHex(plan.data, plan.artifact.addressBase, maxImageSize, &image, &error))
+            if (!parseIntelHex(plan.data, plan.artifact.addressBase, flashSize,
+                    plan.offset, plan.pageSize, &image, &error))
             {
                 call(callbacks.log, QStringLiteral("[%1] Intel HEX parse failed: %2").arg(identity.typeHex(), error));
                 return false;
             }
-            plan.data = image.data;
-            call(callbacks.log, QStringLiteral("[%1] Intel HEX loaded %2 flash bytes from base 0x%3; ignored %4 out-of-range bytes")
-                .arg(identity.typeHex()).arg(image.data.size())
+            for (auto pageIt = image.pages.cbegin(); pageIt != image.pages.cend(); ++pageIt)
+            {
+                plan.expectedPageNumbers.append(pageIt.key());
+                plan.expectedPages.append(pageIt.value());
+            }
+            plan.data.clear();
+            call(callbacks.log, QStringLiteral("[%1] Intel HEX loaded %2 data bytes into %3 flash pages from base 0x%4; ignored %5 out-of-range bytes")
+                .arg(identity.typeHex()).arg(image.dataBytes).arg(image.pages.size())
                 .arg(plan.artifact.addressBase, 8, 16, QLatin1Char('0')).arg(image.ignoredBytes));
         }
-
-        const int firstPage = qMax(0, plan.offset / plan.pageSize);
-        const int firstPageOffset = qMax(0, plan.offset % plan.pageSize);
-        const int pagesToWrite = (firstPageOffset + plan.data.size() + plan.pageSize - 1) / plan.pageSize;
-        if (pagesToWrite <= 0 || firstPage + pagesToWrite > pagesCount)
+        else
         {
-            call(callbacks.log, QStringLiteral("[%1] firmware does not fit flash #%2: size=%3 pageSize=%4 pages=%5")
-                .arg(identity.typeHex()).arg(flashNum).arg(plan.data.size()).arg(plan.pageSize).arg(pagesCount));
+            const int firstPage = qMax(0, plan.offset / plan.pageSize);
+            const int firstPageOffset = qMax(0, plan.offset % plan.pageSize);
+            const int pagesToWrite = (firstPageOffset + plan.data.size() + plan.pageSize - 1) / plan.pageSize;
+            if (pagesToWrite <= 0 || firstPage + pagesToWrite > pagesCount)
+            {
+                call(callbacks.log, QStringLiteral("[%1] firmware does not fit flash #%2: size=%3 pageSize=%4 pages=%5")
+                    .arg(identity.typeHex()).arg(flashNum).arg(plan.data.size()).arg(plan.pageSize).arg(pagesCount));
+                return false;
+            }
+
+            for (int pageIndex = 0; pageIndex < pagesToWrite; ++pageIndex)
+            {
+                QByteArray page(plan.pageSize, char(0xFF));
+                const int targetOffset = pageIndex == 0 ? firstPageOffset : 0;
+                const int sourceOffset = qMax(0, pageIndex * plan.pageSize - firstPageOffset);
+                const int chunkSize = qMin(plan.pageSize - targetOffset, plan.data.size() - sourceOffset);
+                std::copy(plan.data.constBegin() + sourceOffset,
+                    plan.data.constBegin() + sourceOffset + chunkSize,
+                    page.begin() + targetOffset);
+                plan.expectedPageNumbers.append(firstPage + pageIndex);
+                plan.expectedPages.append(page);
+            }
+        }
+
+        if (plan.expectedPages.isEmpty()
+            || plan.expectedPageNumbers.size() != plan.expectedPages.size())
+        {
+            call(callbacks.log, QStringLiteral("[%1] firmware contains no writable flash pages")
+                .arg(identity.typeHex()));
             return false;
         }
 
-        plan.firstWrittenPage = firstPage;
-        plan.expectedPages.clear();
-        call(callbacks.log, QStringLiteral("[%1] writing %2 bytes to flash #%3, pages %4-%5")
-            .arg(identity.typeHex()).arg(plan.data.size()).arg(flashNum)
-            .arg(firstPage).arg(firstPage + pagesToWrite - 1));
+        const int pagesToWrite = plan.expectedPages.size();
+        plan.firstWrittenPage = plan.expectedPageNumbers.first();
+        call(callbacks.log, QStringLiteral("[%1] writing %2 populated pages to flash #%3, page numbers %4-%5")
+            .arg(identity.typeHex()).arg(pagesToWrite).arg(flashNum)
+            .arg(plan.expectedPageNumbers.first()).arg(plan.expectedPageNumbers.last()));
 
         for (int pageIndex = 0; pageIndex < pagesToWrite; ++pageIndex)
         {
-            QByteArray page(plan.pageSize, char(0xFF));
-            const int targetOffset = pageIndex == 0 ? firstPageOffset : 0;
-            const int sourceOffset = qMax(0, pageIndex * plan.pageSize - firstPageOffset);
-            const int chunkSize = qMin(plan.pageSize - targetOffset, plan.data.size() - sourceOffset);
-            std::copy(plan.data.constBegin() + sourceOffset,
-                plan.data.constBegin() + sourceOffset + chunkSize,
-                page.begin() + targetOffset);
-            plan.expectedPages.append(page);
+            const int pageNum = plan.expectedPageNumbers.at(pageIndex);
+            const QByteArray& page = plan.expectedPages.at(pageIndex);
 
             raw.clear();
-            if (!device.flashWritePage(flashNum, firstPage + pageIndex, page, &error, &raw))
+            if (!device.flashWritePage(flashNum, pageNum, page, &error, &raw))
             {
                 if (!raw.isEmpty())
                     call(callbacks.transportLog, QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
                 call(callbacks.log, QStringLiteral("[%1] flash page %2 write failed: %3")
-                    .arg(identity.typeHex()).arg(firstPage + pageIndex).arg(error));
+                    .arg(identity.typeHex()).arg(pageNum).arg(error));
                 return false;
             }
             if (!raw.isEmpty())

@@ -429,7 +429,7 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
 
     DeviceIdentity expected = identity;
     expected.type = identity.applicationType;
-    expected.version = identity.applicationVersion;
+    expected.version = 0;
     expected.state = QStringLiteral("application");
     DeviceIdentity found;
     QString waitError;
@@ -657,10 +657,9 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         DeviceIdentity found;
         const int timeoutMs = step.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
         const int pollIntervalMs = step.arguments.value(QStringLiteral("pollIntervalMs"), 500).toInt();
-        log(QStringLiteral("[%1] waiting for bootloader (expected %2 %3, description fallback enabled)")
+        log(QStringLiteral("[%1] waiting for bootloader (expected type %2, description fallback enabled)")
             .arg(identity.typeHex(),
-                QStringLiteral("0X%1").arg(identity.bootloaderType, 4, 16, QLatin1Char('0')).toUpper(),
-                QStringLiteral("0X%1").arg(identity.bootloaderVersion, 4, 16, QLatin1Char('0')).toUpper()));
+                QStringLiteral("0X%1").arg(identity.bootloaderType, 4, 16, QLatin1Char('0')).toUpper()));
         if (!device.waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs, &found, &error, &raw))
         {
             if (!raw.isEmpty())
@@ -674,8 +673,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         static const QRegularExpression bootMarker(
             QStringLiteral("\\(\\s*Boot\\s*\\)"),
             QRegularExpression::CaseInsensitiveOption);
-        const bool configuredIdentityMatches = found.type == identity.bootloaderType
-            && found.version == identity.bootloaderVersion;
+        const bool configuredIdentityMatches = found.type == identity.bootloaderType;
         const bool descriptionMatches = deviceDescriptionContainsKeywords(found.description, identity.descriptionKeywords);
         const bool hasBootMarker = bootMarker.match(found.description).hasMatch();
         const bool uuidMatches = !identity.uuid.isEmpty()
@@ -860,7 +858,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     {
         DeviceIdentity expected = identity;
         expected.type = identity.applicationType;
-        expected.version = identity.applicationVersion;
+        expected.version = 0;
         expected.state = QStringLiteral("application");
         const int timeoutMs = step.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
         const int pollIntervalMs = step.arguments.value(QStringLiteral("pollIntervalMs"), 1000).toInt();
@@ -927,8 +925,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     {
         const DeviceIdentity& found = mContext.reappearedIdentity;
         const QRegularExpression targetMatcher(mContext.targetFirmware.descriptionRegex);
-        const bool identityMatches = found.type == identity.applicationType
-            && found.version == identity.applicationVersion;
+        const bool identityMatches = found.type == identity.applicationType;
         const bool uuidMatches = !identity.uuid.isEmpty()
             && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
         const bool descriptionMatches = targetMatcher.isValid()
@@ -1102,7 +1099,9 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 bool WorkflowExecution::verifyFlashPages(DeviceBase& device)
 {
     const DeviceIdentity& identity = device.identity();
-    if (mContext.flashPlan.expectedPages.isEmpty())
+    if (mContext.flashPlan.expectedPages.isEmpty()
+        || mContext.flashPlan.expectedPageNumbers.size()
+            != mContext.flashPlan.expectedPages.size())
     {
         log(QStringLiteral("[%1] flash verify requested before any pages were written")
             .arg(identity.typeHex()));
@@ -1114,7 +1113,7 @@ bool WorkflowExecution::verifyFlashPages(DeviceBase& device)
         QByteArray actual;
         QString error;
         QString raw;
-        const int pageNum = mContext.flashPlan.firstWrittenPage + pageIndex;
+        const int pageNum = mContext.flashPlan.expectedPageNumbers.at(pageIndex);
         if (!device.flashReadPage(mContext.flashPlan.flashNum, pageNum, &actual, &error, &raw))
         {
             if (!raw.isEmpty())

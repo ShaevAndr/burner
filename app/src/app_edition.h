@@ -21,9 +21,14 @@ inline QString id()
 
 inline QString displayName()
 {
+    return QStringLiteral("обнови-БОЦ");
+}
+
+inline QString applicationId()
+{
     return isInternal()
-        ? QStringLiteral("Device Workbench — внутренняя версия")
-        : QStringLiteral("Device Workbench — прошивка");
+        ? QStringLiteral("DeviceWorkbenchInternal")
+        : QStringLiteral("DeviceWorkbenchExternal");
 }
 
 inline bool allowsAction(const QString& actionId)

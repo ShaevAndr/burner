@@ -26,6 +26,7 @@ struct FirmwareFlashPlan
     int beginPage = 0;
     int endPage = 0;
     int firstWrittenPage = 0;
+    QVector<int> expectedPageNumbers;
     QVector<QByteArray> expectedPages;
 };
 

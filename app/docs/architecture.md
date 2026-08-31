@@ -1,4 +1,4 @@
-# Device Workbench Architecture
+# Архитектура обнови-БОЦ
 
 Стек: C++17, Qt Widgets, Qt Network, Qt SerialPort. Проект собирается через
 `qmake`.
@@ -27,8 +27,9 @@ identity-ответа устройства и позволяет запуска�
 - ответ IP discovery содержит `magic`, `serverPort`, `modbusAddress`, `type`,
   `version`, `description`, `serialNumber`;
 - flash-операции лучше держать отдельным workflow, аналогично `FlashAutomate`;
-- device description содержит `type`, `version`, `description` как ключевую
-  identity-информацию.
+- модель устройства определяется по `type`; `version` считается информационной
+  ревизией и не участвует в распознавании или повторном подключении;
+- установленная версия прошивки определяется отдельно по описанию устройства.
 
 ## Основные слои
 

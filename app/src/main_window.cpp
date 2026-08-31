@@ -23,6 +23,7 @@
 #include <QRegularExpressionValidator>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStandardPaths>
 #include <QThread>
 #include <QTextStream>
 #include <QStackedWidget>
@@ -358,7 +359,7 @@ QWidget* MainWindow::buildSidebar()
     layout->setContentsMargins(16, 20, 16, 20);
     layout->setSpacing(18);
 
-    QLabel* brandTitle = new QLabel(QStringLiteral("Device Workbench"));
+    QLabel* brandTitle = new QLabel(AppEdition::displayName());
     brandTitle->setObjectName(QStringLiteral("brandTitle"));
     QLabel* brandSub = new QLabel(QStringLiteral("UDP / RS-485"));
     brandSub->setObjectName(QStringLiteral("brandSub"));
@@ -1259,8 +1260,10 @@ void MainWindow::appendTransportLog(const QString& message)
 
 QString MainWindow::logFilePath() const
 {
-    const QString directoryPath = QDir(QCoreApplication::applicationDirPath())
-        .filePath(QStringLiteral("logs"));
+    QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (dataPath.isEmpty())
+        dataPath = QCoreApplication::applicationDirPath();
+    const QString directoryPath = QDir(dataPath).filePath(QStringLiteral("logs"));
     QDir().mkpath(directoryPath);
     return QDir(directoryPath).filePath(QStringLiteral("device-workbench-%1.log")
         .arg(QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"))));

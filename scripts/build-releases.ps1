@@ -9,6 +9,9 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repositoryRoot "app"
 $buildRoot = Join-Path $repositoryRoot "build"
 $releasesRoot = Join-Path $repositoryRoot "releases"
+$firmwareSyncScript = Join-Path $PSScriptRoot "sync-firmware-config.ps1"
+
+& $firmwareSyncScript
 
 $qmakeCommand = Get-Command qmake.exe -ErrorAction SilentlyContinue
 $qmake = if ($qmakeCommand) {
@@ -69,7 +72,19 @@ foreach ($currentEdition in $editions) {
         if ($LASTEXITCODE -ne 0) { throw "windeployqt failed for $currentEdition" }
     }
 
-    Copy-Item -LiteralPath (Join-Path $sourceRoot "config") -Destination $releaseDirectory -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $sourceRoot "flash") -Destination $releaseDirectory -Recurse -Force
+    foreach ($payloadName in @("config", "flash")) {
+        $payloadTarget = Join-Path $releaseDirectory $payloadName
+        if (Test-Path -LiteralPath $payloadTarget) {
+            $resolvedRelease = (Resolve-Path -LiteralPath $releaseDirectory).Path
+            $resolvedTarget = (Resolve-Path -LiteralPath $payloadTarget).Path
+            if (-not $resolvedTarget.StartsWith(
+                $resolvedRelease + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Refusing to replace a payload directory outside the release: $resolvedTarget"
+            }
+            Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+        }
+        Copy-Item -LiteralPath (Join-Path $sourceRoot $payloadName) -Destination $releaseDirectory -Recurse -Force
+    }
     Write-Host "Built $currentEdition edition: $executable"
 }

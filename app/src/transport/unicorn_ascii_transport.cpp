@@ -949,10 +949,9 @@ public:
                     .arg(found.serialNumber, expected.serialNumber);
                 return false;
             }
-            if (expected.type != 0
-                && (found.type != expected.type || found.version != expected.version))
+            if (expected.type != 0 && found.type != expected.type)
             {
-                lastRejection = QStringLiteral("type/version does not match");
+                lastRejection = QStringLiteral("device type does not match");
                 return false;
             }
             const bool bootDescription = descriptionContainsBoot(found.description);

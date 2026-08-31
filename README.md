@@ -1,6 +1,6 @@
-# Device Workbench
+# обнови-БОЦ
 
-Device Workbench — Windows-приложение на Qt 5 для поиска, диагностики и прошивки
+обнови-БОЦ — Windows-приложение на Qt 5 для поиска, диагностики и прошивки
 устройств по UDP и RS-485. Операции выполняются независимо для каждого устройства,
 поэтому групповая прошивка обрабатывает устройства параллельно.
 
@@ -8,9 +8,9 @@ Device Workbench — Windows-приложение на Qt 5 для поиска,
 
 Проект собирается из общей кодовой базы в двух редакциях:
 
-- **Internal** — внутренняя версия со всеми функциями, включая смену даты
+- **Внутренняя (`internal`)** — версия со всеми функциями, включая смену даты
   производства и номера устройства;
-- **External** — внешняя версия только для поиска и прошивки. Смена даты, номера
+- **Внешняя (`external`)** — версия только для поиска и прошивки. Смена даты, номера
   и остальные служебные действия недоступны как в интерфейсе, так и на уровне
   исполнителя workflow.
 
@@ -88,6 +88,30 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-releases
 Перед пересборкой закройте запущенный экземпляр соответствующей редакции: Windows
 не позволит заменить используемый `.exe`.
 
+## Консольное приложение сборки
+
+Автономный CLI объединяет проверку прошивок, сборку приложений и создание
+установщиков. Сначала соберите сам инструмент:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-cli.ps1
+```
+
+CLI выпускается отдельно от основных приложений: готовый EXE находится в
+`releases/tools`, а архив для передачи — в `releases/obnovi-BOC-CLI-1.0.0.zip`.
+
+Основные команды:
+
+```powershell
+.\releases\tools\obnovi-boc-cli.exe check
+.\releases\tools\obnovi-boc-cli.exe build --edition all
+.\releases\tools\obnovi-boc-cli.exe installer --edition all --version 1.0.0
+```
+
+Параметр `installer --build` сначала пересобирает приложения. `--dry-run`
+показывает PowerShell-команду без её выполнения. Полная справка находится в
+`tools/obnovi-boc-cli/README.md` и выводится командой `obnovi-boc-cli.exe --help`.
+
 ## Запуск
 
 Запустить внутреннюю редакцию:
@@ -112,6 +136,44 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-release.ps
 `releases/external`. Рабочим каталогом должен оставаться каталог соответствующего
 релиза, чтобы приложение нашло `config` и `flash`.
 
+## Установщики Windows
+
+Установщики создаются через Inno Setup 6 и включают готовое приложение, Qt DLL,
+конфигурацию и все файлы прошивок из каталога `flash`.
+
+Если Inno Setup 6 ещё не установлен:
+
+```powershell
+winget install --id JRSoftware.InnoSetup --exact --scope user
+```
+
+Собрать оба установщика из существующих релизов:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installers.ps1 -Version 1.0.0
+```
+
+Пересобрать приложения, а затем создать установщики:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installers.ps1 -Version 1.0.0 -BuildApplication
+```
+
+Результат создаётся в `installers`:
+
+```text
+обнови-БОЦ-Внутренняя-Setup-1.0.0.exe
+обнови-БОЦ-Setup-1.0.0.exe
+```
+
+Одновременно сохраняются обычные переносимые сборки в каталогах
+`releases/internal` и `releases/external`, а также создаются архивы для передачи:
+
+```text
+releases/obnovi-BOC-Internal-Portable-1.0.0.zip
+releases/obnovi-BOC-External-Portable-1.0.0.zip
+```
+
 ## Конфигурация и прошивки
 
 - `app/config/device-catalog.json` описывает поддерживаемые устройства и прошивки;
@@ -123,15 +185,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-release.ps
 релиз. После ручного изменения файлов в `app/config` или `app/flash` необходимо
 повторно запустить сборку.
 
-## Журналы
+Каталог прошивок обновляется автоматически при сборке. Его также можно
+синхронизировать или проверить отдельно:
 
-Журналы создаются рядом с запущенным приложением:
-
-```text
-releases/<edition>/logs/
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-firmware-config.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-firmware-config.ps1 -Check
 ```
 
-Каталоги журналов не хранятся в Git и не удаляются при обычной пересборке.
+## Журналы
+
+Журналы создаются в локальном каталоге данных текущего пользователя:
+
+```text
+%LOCALAPPDATA%\Burner\DeviceWorkbenchInternal\logs\
+%LOCALAPPDATA%\Burner\DeviceWorkbenchExternal\logs\
+```
+
+Такой путь доступен для записи и переносимой версии, и приложения, установленного в
+`Program Files`. Журналы не удаляются при обновлении или удалении приложения.
 
 ## Тесты
 

@@ -8,7 +8,8 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QApplication::setApplicationName(AppEdition::displayName());
+    QApplication::setApplicationName(AppEdition::applicationId());
+    QApplication::setApplicationDisplayName(AppEdition::displayName());
     QApplication::setOrganizationName(QStringLiteral("Burner"));
 
     ServiceContainer services;

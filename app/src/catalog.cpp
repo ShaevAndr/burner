@@ -29,11 +29,6 @@ static quint32 parseAddress(const QJsonValue& value)
     return ok ? address : 0;
 }
 
-static quint32 catalogKey(quint16 type, quint16 version)
-{
-    return (quint32(type) << 16) | quint32(version);
-}
-
 static bool descriptionContainsBoot(const QString& description)
 {
     static const QRegularExpression bootPattern(
@@ -231,7 +226,7 @@ bool CatalogService::load(const QString& fileName, QString* error)
         return false;
     }
 
-    QHash<quint32, CatalogEntry> loadedEntries;
+    QHash<quint16, CatalogEntry> loadedEntries;
     QVector<CatalogEntry> catalogEntries;
     QSet<QString> deviceIds;
     const QJsonArray devices = root.value(QStringLiteral("devices")).toArray();
@@ -280,23 +275,21 @@ bool CatalogService::load(const QString& fileName, QString* error)
         }
         deviceIds.insert(entry.id);
 
-        const auto addIdentity = [&](quint16 type, quint16 version) -> bool {
+        const auto addIdentity = [&](quint16 type) -> bool {
             if (type == 0)
                 return true;
-            const quint32 key = catalogKey(type, version);
-            if (loadedEntries.contains(key))
+            if (loadedEntries.contains(type))
             {
                 if (error)
-                    *error = QStringLiteral("Duplicate device identity %1/%2")
-                        .arg(type, 4, 16, QLatin1Char('0'))
-                        .arg(version, 4, 16, QLatin1Char('0'));
+                    *error = QStringLiteral("Duplicate device type %1")
+                        .arg(type, 4, 16, QLatin1Char('0'));
                 return false;
             }
-            loadedEntries.insert(key, entry);
+            loadedEntries.insert(type, entry);
             return true;
         };
-        if (!addIdentity(entry.type, entry.version)
-            || !addIdentity(entry.bootloaderType, entry.bootloaderVersion))
+        if (!addIdentity(entry.type)
+            || !addIdentity(entry.bootloaderType))
             return false;
         catalogEntries.append(entry);
     }
@@ -326,7 +319,7 @@ bool CatalogService::load(const QString& fileName, QString* error)
         return false;
     }
 
-    mEntriesByTypeVersion = std::move(loadedEntries);
+    mEntriesByType = std::move(loadedEntries);
     mEntries = std::move(catalogEntries);
     mFirmwareByDeviceId = std::move(firmwareByDeviceId);
     return true;
@@ -334,8 +327,8 @@ bool CatalogService::load(const QString& fileName, QString* error)
 
 const CatalogEntry* CatalogService::entryForDevice(const DeviceIdentity& device) const
 {
-    const auto direct = mEntriesByTypeVersion.constFind(catalogKey(device.type, device.version));
-    if (direct != mEntriesByTypeVersion.constEnd())
+    const auto direct = mEntriesByType.constFind(device.type);
+    if (direct != mEntriesByType.constEnd())
         return &direct.value();
 
     const CatalogEntry* keywordMatch = nullptr;

@@ -16,7 +16,7 @@ public:
 
 private:
     const CatalogEntry* entryForDevice(const DeviceIdentity& device) const;
-    QHash<quint32, CatalogEntry> mEntriesByTypeVersion;
+    QHash<quint16, CatalogEntry> mEntriesByType;
     QVector<CatalogEntry> mEntries;
     QHash<QString, FirmwareCatalog> mFirmwareByDeviceId;
 };
