@@ -50,7 +50,7 @@ Qt Widgets UI. Содержит левое меню, панель поиска, 
 
 `CatalogService`
 
-Читает `config/device-catalog.json`. Сопоставляет найденное устройство по
+Читает встроенный ресурс `:/config/device-catalog.json`. Сопоставляет найденное устройство по
 `type`, подставляет имя, capabilities, `deviceClass`, `flashWorkflows`,
 `firmwareFiles` и сравнивает `description` с `expectedDescription`.
 
@@ -66,7 +66,7 @@ Qt Widgets UI. Содержит левое меню, панель поиска, 
 
 `ActionRepository`
 
-Читает `config/actions.json`. В MVP содержит только две команды flash. Для
+Читает встроенный ресурс `:/config/actions.json`. В MVP содержит только две команды flash. Для
 одного устройства и для группы возвращает действия, которые разрешены по
 capabilities.
 
@@ -106,7 +106,7 @@ capabilities.
 `WorkflowRunner`
 
 Исполняет action для одного или нескольких устройств. Порядок шагов не зашит в
-runner: workflow описаны в `config/workflows.json` как список атомарных
+runner: workflow описаны во встроенном `:/config/workflows.json` как список атомарных
 операций `op`. `WorkflowRepository` из `src/workflow_definition.h/.cpp`
 загружает этот JSON, runner создает `WorkflowExecution` и вызывает
 `next(device)`, а уже `next` интерпретирует текущий шаг и вызывает операцию

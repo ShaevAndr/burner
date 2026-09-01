@@ -17,6 +17,7 @@
 #include "../src/action_repository.h"
 #include "../src/catalog.h"
 #include "../src/device.h"
+#include "../src/firmware_access_policy.h"
 #include "../src/transport/unicorn_ascii_transport.h"
 #include "../src/workflow.h"
 #include "../src/workers.h"
@@ -303,6 +304,7 @@ class DeviceWorkbenchTest : public QObject
     Q_OBJECT
 
 private slots:
+    void embeddedPayloadIsAvailable();
     void catalogExposesBocV12Actions();
     void catalogRecognizesBocV6();
     void workflowEmitsProgressForTestFlash();
@@ -336,6 +338,34 @@ private slots:
     void networkChangeSerialNumberBocV6();
     void networkPipelineBocV6();
 };
+
+void DeviceWorkbenchTest::embeddedPayloadIsAvailable()
+{
+    CatalogService catalog;
+    ActionRepository actions;
+    WorkflowRepository workflows;
+    QString error;
+
+    QVERIFY2(catalog.load(QStringLiteral(":/config/device-catalog.json"), &error), qPrintable(error));
+    QVERIFY2(actions.load(QStringLiteral(":/config/actions.json"), &error), qPrintable(error));
+    QVERIFY2(workflows.load(QStringLiteral(":/config/workflows.json"), &error), qPrintable(error));
+
+    DeviceIdentity identity;
+    identity.type = 0x0A03;
+    identity.version = 0x0001;
+    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Jul 16 2026 09:24:19)");
+    identity = catalog.enrich(identity);
+    QVERIFY(identity.known);
+
+    const FirmwareArtifact artifact = identity.firmwareForTarget(QStringLiteral("application"));
+    QVERIFY(!artifact.relativePath.isEmpty());
+    QFile firmware(QStringLiteral(":/") + artifact.relativePath);
+    QVERIFY2(firmware.open(QIODevice::ReadOnly), qPrintable(firmware.errorString()));
+    const QByteArray data = firmware.readAll();
+    QVERIFY(!data.isEmpty());
+    QVERIFY2(sha256Hex(data).compare(artifact.sha256, Qt::CaseInsensitive) == 0,
+        "Embedded firmware SHA-256 does not match the catalog");
+}
 
 void DeviceWorkbenchTest::catalogExposesBocV12Actions()
 {
@@ -408,7 +438,7 @@ void DeviceWorkbenchTest::catalogRecognizesBocV6()
     DeviceIdentity device;
     device.type = 0x0A02;
     device.version = 0x4321;
-    device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     device.serialNumber = QStringLiteral("000");
     device.endpoint = QStringLiteral("192.168.1.90:2001");
     device = catalog.enrich(device);
@@ -419,7 +449,7 @@ void DeviceWorkbenchTest::catalogRecognizesBocV6()
     QCOMPARE(device.name, QStringLiteral("БОЦ-В-6"));
     QCOMPARE(device.deviceClass, QStringLiteral("DeviceBase"));
     QCOMPARE(device.descriptionKeywords, QStringList{QStringLiteral("БОЦ-В-6")});
-    QCOMPARE(device.currentFirmwareId, QStringLiteral("sw-2026-08-26-14-55-55"));
+    QCOMPARE(device.currentFirmwareId, QStringLiteral("sw-2026-08-31-10-01-24"));
     QCOMPARE(device.bootloaderType, quint16(0x1000));
     QCOMPARE(device.bootloaderVersion, quint16(0x0000));
     QCOMPARE(device.productionDateRegister, 9);
@@ -427,7 +457,7 @@ void DeviceWorkbenchTest::catalogRecognizesBocV6()
     QCOMPARE(device.firmwareVersions.size(), 2);
     QCOMPARE(device.firmwareTransitions.size(), 4);
 
-    const QString newFirmwareId = QStringLiteral("sw-2026-08-26-14-55-55");
+    const QString newFirmwareId = QStringLiteral("sw-2026-08-31-10-01-24");
     const QString previousFirmwareId = QStringLiteral("sw-2026-07-21-11-59-00");
     const FirmwareTransitionSpec* transitionFromCurrent = device.transitionTo(newFirmwareId);
     QVERIFY(transitionFromCurrent);
@@ -451,14 +481,14 @@ void DeviceWorkbenchTest::catalogRecognizesBocV6()
     QVERIFY(upgrade->enabled);
 
     DeviceIdentity newFirmware = device;
-    newFirmware.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    newFirmware.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     newFirmware = catalog.enrich(newFirmware);
     QCOMPARE(newFirmware.currentFirmwareId, newFirmwareId);
 
     DeviceIdentity bootloader;
     bootloader.type = 0x1000;
     bootloader.version = 0x1234;
-    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     bootloader = catalog.enrich(bootloader);
     QVERIFY2(bootloader.known, "Generic bootloader identity must be resolved from its description");
     QCOMPARE(bootloader.catalogId, QStringLiteral("boc.v6"));
@@ -467,7 +497,7 @@ void DeviceWorkbenchTest::catalogRecognizesBocV6()
     DeviceIdentity bootloaderWithUnexpectedIdentity;
     bootloaderWithUnexpectedIdentity.type = 0x7777;
     bootloaderWithUnexpectedIdentity.version = 0x0002;
-    bootloaderWithUnexpectedIdentity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    bootloaderWithUnexpectedIdentity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     bootloaderWithUnexpectedIdentity = catalog.enrich(bootloaderWithUnexpectedIdentity);
     QVERIFY2(bootloaderWithUnexpectedIdentity.known,
         "Bootloader with unexpected type/version must be resolved from its description");
@@ -969,7 +999,7 @@ void DeviceWorkbenchTest::applicationLoadActionIsAvailableForBootloader()
     bocV6Bootloader.type = 0x1000;
     bocV6Bootloader.version = 0x0000;
     bocV6Bootloader.description = QStringLiteral(
-        "Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№902 (SW Aug 26 2026 14:55:55)");
+        "Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№902 (SW Aug 31 2026 10:01:24)");
     bocV6Bootloader = catalog.enrich(bocV6Bootloader);
     QVERIFY(bocV6Bootloader.known);
     QCOMPARE(bocV6Bootloader.state, QStringLiteral("bootloader"));
@@ -1188,7 +1218,7 @@ void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
     identity.type = 0x0A02;
     identity.version = 0x0001;
     identity.modbusAddress = 1;
-    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     identity = catalog.enrich(identity);
 
     auto transport = std::make_shared<FakeDeviceTransport>();
@@ -1199,7 +1229,7 @@ void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
     discoveredBootloader.type = 0x7777;
     discoveredBootloader.version = 0x0002;
     discoveredBootloader.modbusAddress = 1;
-    discoveredBootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    discoveredBootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
 
     DeviceIdentity discoveredApplication;
     discoveredApplication.id = identity.id;
@@ -1208,7 +1238,7 @@ void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
     discoveredApplication.version = 0x4321;
     discoveredApplication.modbusAddress = 1;
     discoveredApplication.description = QStringLiteral(
-        "Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+        "Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     transport->discoveredIdentities = {
         discoveredBootloader,
         discoveredApplication,
@@ -1229,7 +1259,7 @@ void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
     const QString previousCurrentPath = QDir::currentPath();
     QDir::setCurrent(QFileInfo(catalogPath).absoluteDir().absoluteFilePath(QStringLiteral("..")));
     runner.run(action, {deviceObject}, QVariantMap{
-        {QStringLiteral("targetFirmwareId"), QStringLiteral("sw-2026-08-26-14-55-55")}
+        {QStringLiteral("targetFirmwareId"), QStringLiteral("sw-2026-08-31-10-01-24")}
     });
     QDir::setCurrent(previousCurrentPath);
 
@@ -1263,7 +1293,7 @@ void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
     QCOMPARE(transport->noReplyWrites.at(0).value, qint32(1));
     QCOMPARE(transport->noReplyWrites.at(1).index, quint16(0));
     QCOMPARE(transport->noReplyWrites.at(1).value, qint32(1));
-    QCOMPARE(deviceObject->identity().currentFirmwareId, QStringLiteral("sw-2026-08-26-14-55-55"));
+    QCOMPARE(deviceObject->identity().currentFirmwareId, QStringLiteral("sw-2026-08-31-10-01-24"));
     QCOMPARE(deviceObject->identity().state, QStringLiteral("application"));
     QCOMPARE(deviceObject->identity().uuid, transport->uuidValue);
     QCOMPARE(transport->uuidReadCalls, 1);
@@ -1282,7 +1312,7 @@ void DeviceWorkbenchTest::workflowRejectsBootloaderWithDifferentUuid()
     identity.version = 0x0001;
     identity.modbusAddress = 1;
     identity.serialNumber = QStringLiteral("000");
-    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     identity = catalog.enrich(identity);
 
     auto transport = std::make_shared<FakeDeviceTransport>();
@@ -1307,7 +1337,7 @@ void DeviceWorkbenchTest::workflowRejectsBootloaderWithDifferentUuid()
     WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
     runner.run(action, {device}, QVariantMap{
-        {QStringLiteral("targetFirmwareId"), QStringLiteral("sw-2026-08-26-14-55-55")}
+        {QStringLiteral("targetFirmwareId"), QStringLiteral("sw-2026-08-31-10-01-24")}
     });
 
     QCOMPARE(transport->resetCalls, 1);
@@ -1337,10 +1367,10 @@ void DeviceWorkbenchTest::workflowExecutesAllowedFirmwareTransition()
     bootloader.version = 0x0000;
     bootloader.modbusAddress = 1;
     bootloader.serialNumber = QStringLiteral("000");
-    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) (Boot) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     bootloader = catalog.enrich(bootloader);
     QCOMPARE(bootloader.state, QStringLiteral("bootloader"));
-    QCOMPARE(bootloader.currentFirmwareId, QStringLiteral("sw-2026-08-26-14-55-55"));
+    QCOMPARE(bootloader.currentFirmwareId, QStringLiteral("sw-2026-08-31-10-01-24"));
 
     auto transport = std::make_shared<FakeDeviceTransport>();
     transport->flashParams = {FlashMemoryParams{512, 64}, FlashMemoryParams{480, 4096}};
@@ -1389,7 +1419,7 @@ void DeviceWorkbenchTest::workflowExecutesAllowedFirmwareTransition()
     bool sawTransition = false;
     for (const QList<QVariant>& row : logSpy)
     {
-        if (!row.isEmpty() && row.first().toString().contains(QStringLiteral("firmware transition sw-2026-08-26-14-55-55 -> sw-2026-07-21-11-59-00")))
+        if (!row.isEmpty() && row.first().toString().contains(QStringLiteral("firmware transition sw-2026-08-31-10-01-24 -> sw-2026-07-21-11-59-00")))
             sawTransition = true;
     }
     QVERIFY(sawTransition);
@@ -1401,14 +1431,16 @@ void DeviceWorkbenchTest::knownDeviceAllowsEveryFirmwareWhenCurrentVersionIsUnkn
     first.id = QStringLiteral("1.0.0");
     first.artifact.firmwareId = first.id;
     first.artifact.target = QStringLiteral("application");
-    first.artifact.relativePath = QStringLiteral("first.bin");
+    first.artifact.relativePath = QStringLiteral(
+        "flash/boc-v6/BOCv6_ADCVibr_Digital20260721_1228.hex");
     first.installation.workflow = QStringLiteral("firmware.application.standard");
     first.installation.strategy = QStringLiteral("page-flash");
 
     FirmwareVersionSpec second = first;
     second.id = QStringLiteral("2.0.0");
     second.artifact.firmwareId = second.id;
-    second.artifact.relativePath = QStringLiteral("second.bin");
+    second.artifact.relativePath = QStringLiteral(
+        "flash/boc-v6/BOCv6_ADCVibr_Digital20260831_1007.hex");
 
     DeviceIdentity identity;
     identity.id = QStringLiteral("known-device");
@@ -1420,6 +1452,7 @@ void DeviceWorkbenchTest::knownDeviceAllowsEveryFirmwareWhenCurrentVersionIsUnkn
     identity.bootloaderType = 0x1001;
     identity.bootloaderVersion = 0;
     identity.known = true;
+    identity.catalogId = QStringLiteral("boc.v6");
     identity.state = QStringLiteral("application");
     identity.uuid = QStringLiteral("410FC241-3431-384D-1235-36353133584F");
     identity.firmwareVersions = {first, second};
@@ -1427,6 +1460,8 @@ void DeviceWorkbenchTest::knownDeviceAllowsEveryFirmwareWhenCurrentVersionIsUnkn
     QVERIFY(identity.currentFirmwareId.isEmpty());
     QVERIFY(identity.isFirmwareTargetAllowed(first.id));
     QVERIFY(identity.isFirmwareTargetAllowed(second.id));
+    QVERIFY(FirmwareAccessPolicy::isTargetAllowed(identity, first.id));
+    QVERIFY(FirmwareAccessPolicy::isTargetAllowed(identity, second.id));
 
     DeviceIdentity unknownDevice = identity;
     unknownDevice.known = false;
@@ -1992,7 +2027,7 @@ void DeviceWorkbenchTest::networkPipelineBocV6()
         QSKIP("Set DEVICE_WORKBENCH_NETWORK_BOCV6_ENDPOINT to run the destructive network firmware test");
     const QString configuredTarget = QString::fromLocal8Bit(qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_TARGET")).trimmed();
     const QString targetFirmwareId = configuredTarget.isEmpty()
-        ? QStringLiteral("sw-2026-08-26-14-55-55")
+        ? QStringLiteral("sw-2026-08-31-10-01-24")
         : configuredTarget;
 
     const QString catalogPath = sourceConfigPath(QStringLiteral("release/config/device-catalog.json"));
@@ -2013,7 +2048,7 @@ void DeviceWorkbenchTest::networkPipelineBocV6()
     identity.version = 0x0001;
     identity.modbusAddress = 1;
     identity.serialNumber = QStringLiteral("000");
-    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 26 2026 14:55:55)");
+    identity.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6) 1970 I Зав.№000 (SW Aug 31 2026 10:01:24)");
     identity = catalog.enrich(identity);
     QVERIFY2(identity.known, "The network BOC-V-6 identity was not recognized by the release catalog");
 

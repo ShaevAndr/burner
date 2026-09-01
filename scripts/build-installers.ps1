@@ -11,6 +11,7 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $packagingRoot = Join-Path $repositoryRoot "packaging\windows"
 $installersRoot = Join-Path $repositoryRoot "installers"
 $releasesRoot = Join-Path $repositoryRoot "releases"
+$sourceRoot = Join-Path $repositoryRoot "app"
 $editions = if ($Edition -eq "all") { @("internal", "external") } else { @($Edition) }
 
 if ($BuildApplication) {
@@ -37,23 +38,25 @@ New-Item -ItemType Directory -Path $installersRoot -Force | Out-Null
 foreach ($currentEdition in $editions) {
     $releaseDirectory = Join-Path $releasesRoot $currentEdition
     $executable = Join-Path $releaseDirectory "device-workbench-$currentEdition.exe"
-    $configDirectory = Join-Path $releaseDirectory "config"
-    $flashDirectory = Join-Path $releaseDirectory "flash"
     $issFile = Join-Path $packagingRoot "$currentEdition.iss"
 
     if (-not (Test-Path -LiteralPath $executable)) {
         throw "Missing release executable: $executable"
     }
-    foreach ($configName in @("actions.json", "device-catalog.json", "workflows.json")) {
-        $configFile = Join-Path $configDirectory $configName
-        if (-not (Test-Path -LiteralPath $configFile)) {
-            throw "Missing installer configuration file: $configFile"
+    foreach ($payloadName in @("config", "flash")) {
+        $payloadPath = Join-Path $releaseDirectory $payloadName
+        if (Test-Path -LiteralPath $payloadPath) {
+            throw "Release contains an unprotected payload directory. Rebuild the application: $payloadPath"
         }
     }
-    $firmwareFiles = Get-ChildItem -LiteralPath $flashDirectory -Recurse -File |
+    $resourceManifest = Join-Path $sourceRoot "embedded_resources.qrc"
+    if (-not (Test-Path -LiteralPath $resourceManifest -PathType Leaf)) {
+        throw "Missing embedded resource manifest: $resourceManifest"
+    }
+    $firmwareFiles = Get-ChildItem -LiteralPath (Join-Path $sourceRoot "flash") -Recurse -File |
         Where-Object { $_.Extension -in @(".bin", ".hex") }
     if (-not $firmwareFiles) {
-        throw "No firmware files were found in $flashDirectory"
+        throw "No source firmware files were found for the embedded release."
     }
 
     $portableBaseName = if ($currentEdition -eq "internal") {
@@ -77,7 +80,7 @@ foreach ($currentEdition in $editions) {
     }
     Write-Host "Created portable release: $portableArchive"
 
-    Write-Host "Packaging $currentEdition edition with $($firmwareFiles.Count) firmware file(s)..."
+    Write-Host "Packaging $currentEdition edition with $($firmwareFiles.Count) embedded firmware file(s)..."
     & $iscc "/DMyAppVersion=$Version" $issFile
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup failed for the $currentEdition edition."

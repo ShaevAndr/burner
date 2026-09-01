@@ -1,8 +1,11 @@
 QT += widgets network serialport
 CONFIG += c++17 release
 CONFIG -= debug debug_and_release build_all
+DEFINES += DEVICE_WORKBENCH_EMBEDDED_PAYLOAD
 
 TEMPLATE = app
+
+RESOURCES += embedded_resources.qrc
 
 SOURCES += \
     src/action_repository.cpp \
@@ -30,6 +33,7 @@ HEADERS += \
     src/devices/boc_v12_device.h \
     src/discovery.h \
     src/firmware_flash_strategy.h \
+    src/firmware_access_policy.h \
     src/main_window.h \
     src/models.h \
     src/service_container.h \

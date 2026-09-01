@@ -6,4 +6,7 @@ TARGET = external-edition-tests
 DEFINES += DEVICE_WORKBENCH_EXTERNAL
 
 SOURCES += tst_external_edition.cpp
-HEADERS += ../src/app_edition.h
+HEADERS += \
+    ../src/app_edition.h \
+    ../src/firmware_access_policy.h \
+    ../src/models.h

@@ -10,8 +10,10 @@ $sourceRoot = Join-Path $repositoryRoot "app"
 $buildRoot = Join-Path $repositoryRoot "build"
 $releasesRoot = Join-Path $repositoryRoot "releases"
 $firmwareSyncScript = Join-Path $PSScriptRoot "sync-firmware-config.ps1"
+$resourceGeneratorScript = Join-Path $PSScriptRoot "generate-embedded-resources.ps1"
 
 & $firmwareSyncScript
+& $resourceGeneratorScript
 
 $qmakeCommand = Get-Command qmake.exe -ErrorAction SilentlyContinue
 $qmake = if ($qmakeCommand) {
@@ -72,6 +74,8 @@ foreach ($currentEdition in $editions) {
         if ($LASTEXITCODE -ne 0) { throw "windeployqt failed for $currentEdition" }
     }
 
+    # Configuration and firmware are linked into the executable by Qt's resource
+    # compiler. Remove payload directories left by older releases.
     foreach ($payloadName in @("config", "flash")) {
         $payloadTarget = Join-Path $releaseDirectory $payloadName
         if (Test-Path -LiteralPath $payloadTarget) {
@@ -84,7 +88,6 @@ foreach ($currentEdition in $editions) {
             }
             Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
         }
-        Copy-Item -LiteralPath (Join-Path $sourceRoot $payloadName) -Destination $releaseDirectory -Recurse -Force
     }
     Write-Host "Built $currentEdition edition: $executable"
 }

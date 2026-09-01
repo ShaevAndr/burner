@@ -1,9 +1,5 @@
 #include "service_container.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFileInfo>
-
 ServiceContainer::ServiceContainer(QObject* parent) :
     QObject(parent),
     mWorkflow(&mWorkflows, this),
@@ -37,18 +33,5 @@ bool ServiceContainer::reloadWorkflows(QString* error)
 
 QString ServiceContainer::configPath(const QString& fileName) const
 {
-    const QStringList roots = {
-        QCoreApplication::applicationDirPath() + QStringLiteral("/config"),
-        QDir::currentPath() + QStringLiteral("/config"),
-        QDir::currentPath() + QStringLiteral("/../config"),
-        QDir::currentPath() + QStringLiteral("/app/config")
-    };
-
-    for (const QString& root : roots)
-    {
-        const QString candidate = QDir(root).filePath(fileName);
-        if (QFileInfo::exists(candidate))
-            return candidate;
-    }
-    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("config/") + fileName);
+    return QStringLiteral(":/config/") + fileName;
 }

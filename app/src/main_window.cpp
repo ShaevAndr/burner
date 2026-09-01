@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include "app_edition.h"
+#include "firmware_access_policy.h"
 #include "workers.h"
 
 #include <QCheckBox>
@@ -144,7 +145,7 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
         for (const FirmwareVersionSpec& targetFirmware : firstIdentity.firmwareVersions)
         {
             if (targetFirmware.artifact.target != target
-                || !firstIdentity.isFirmwareTargetAllowed(targetFirmware.id))
+                || !FirmwareAccessPolicy::isTargetAllowed(firstIdentity, targetFirmware.id))
                 continue;
 
             bool availableForAll = true;
@@ -158,7 +159,7 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
                 const DeviceIdentity& identity = device->identity();
                 const FirmwareVersionSpec* deviceTarget = identity.firmwareVersionById(targetFirmware.id);
                 if (!deviceTarget || deviceTarget->artifact.target != target
-                    || !identity.isFirmwareTargetAllowed(targetFirmware.id))
+                    || !FirmwareAccessPolicy::isTargetAllowed(identity, targetFirmware.id))
                 {
                     availableForAll = false;
                     break;
@@ -1485,35 +1486,60 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         const QVector<FirmwareArtifact> artifacts = artifactsForTarget(devices, action.target);
         const bool graphControlled = action.target == QStringLiteral("application")
             && devices.first() && !devices.first()->identity().firmwareVersions.isEmpty();
+        const bool allowsCustomFirmware = AppEdition::allowsCustomFirmware() && !graphControlled;
         bool hasUnknownCurrentFirmware = false;
+        bool hasRestrictedExternalBocV6 = false;
         for (const std::shared_ptr<DeviceBase>& device : devices)
         {
             if (device && device->identity().known
                 && device->identity().currentFirmwareId.isEmpty())
-            {
                 hasUnknownCurrentFirmware = true;
-                break;
-            }
+            if (device && FirmwareAccessPolicy::isRestrictedExternalBocV6(device->identity()))
+                hasRestrictedExternalBocV6 = true;
         }
 
         QDialog dialog(this);
         dialog.setWindowTitle(title);
 
         QVBoxLayout* layout = new QVBoxLayout(&dialog);
-        QLabel* intro = new QLabel(graphControlled
-            ? (devices.size() == 1
-                ? (hasUnknownCurrentFirmware
-                    ? QStringLiteral("Версия текущей прошивки не определена. "
-                        "Доступны все прошивки для этого устройства.")
-                    : QStringLiteral("Текущая прошивка: %1. Выберите разрешённый переход.")
-                        .arg(devices.first()->identity().currentFirmwareId))
-                : (hasUnknownCurrentFirmware
-                    ? QStringLiteral("Для устройств с неизвестной версией доступны все прошивки; "
-                        "для остальных учтены разрешённые переходы.")
-                    : QStringLiteral("Выберите переход, разрешённый для всех %1 устройств.").arg(devices.size())))
-            : (devices.size() == 1
-                ? QStringLiteral("Выберите файл прошивки для 1 устройства.")
-                : QStringLiteral("Выберите файл прошивки для %1 устройств.").arg(devices.size())));
+        QString introText;
+        if (graphControlled && hasRestrictedExternalBocV6)
+        {
+            introText = hasUnknownCurrentFirmware
+                ? QStringLiteral("Версия текущей прошивки БОЦ-В-6 не определена. "
+                                 "Во внешней версии прошивка запрещена.")
+                : QStringLiteral("Во внешней версии обновление до "
+                                 "BOCv6_ADCVibr_Digital20260831_1007 доступно только с версии "
+                                 "BOCv6_ADCVibr_Digital20260721_1228.");
+        }
+        else if (graphControlled && devices.size() == 1)
+        {
+            introText = hasUnknownCurrentFirmware
+                ? QStringLiteral("Версия текущей прошивки не определена. "
+                                 "Доступны все прошивки для этого устройства.")
+                : QStringLiteral("Текущая прошивка: %1. Выберите разрешённый переход.")
+                    .arg(devices.first()->identity().currentFirmwareId);
+        }
+        else if (graphControlled)
+        {
+            introText = hasUnknownCurrentFirmware
+                ? QStringLiteral("Для устройств с неизвестной версией доступны все прошивки; "
+                                 "для остальных учтены разрешённые переходы.")
+                : QStringLiteral("Выберите переход, разрешённый для всех %1 устройств.").arg(devices.size());
+        }
+        else if (devices.size() == 1)
+        {
+            introText = allowsCustomFirmware
+                ? QStringLiteral("Выберите прошивку для 1 устройства.")
+                : QStringLiteral("Выберите встроенную прошивку для 1 устройства.");
+        }
+        else
+        {
+            introText = allowsCustomFirmware
+                ? QStringLiteral("Выберите прошивку для %1 устройств.").arg(devices.size())
+                : QStringLiteral("Выберите встроенную прошивку для %1 устройств.").arg(devices.size());
+        }
+        QLabel* intro = new QLabel(introText);
         intro->setWordWrap(true);
         layout->addWidget(intro);
 
@@ -1536,15 +1562,25 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         artifactCombo->setCurrentIndex(defaultIndex);
         form->addRow(QStringLiteral("Прошивка"), artifactCombo);
 
-        QLineEdit* customFile = new QLineEdit;
-        customFile->setReadOnly(true);
-        QPushButton* browse = new QPushButton(QStringLiteral("Выбрать файл..."));
-        customFile->setEnabled(!graphControlled);
-        browse->setEnabled(!graphControlled);
-        QHBoxLayout* fileRow = new QHBoxLayout;
-        fileRow->addWidget(customFile, 1);
-        fileRow->addWidget(browse);
-        form->addRow(QStringLiteral("Другой файл"), fileRow);
+        QLineEdit* customFile = nullptr;
+        if (allowsCustomFirmware)
+        {
+            customFile = new QLineEdit;
+            customFile->setReadOnly(true);
+            QPushButton* browse = new QPushButton(QStringLiteral("Выбрать файл..."));
+            QHBoxLayout* fileRow = new QHBoxLayout;
+            fileRow->addWidget(customFile, 1);
+            fileRow->addWidget(browse);
+            form->addRow(QStringLiteral("Другой файл"), fileRow);
+            connect(browse, &QPushButton::clicked, &dialog, [customFile]() {
+                const QString fileName = QFileDialog::getOpenFileName(nullptr,
+                    QStringLiteral("Выбрать прошивку"),
+                    QString(),
+                    QStringLiteral("Firmware (*.bin *.hex *.ldr);;All files (*.*)"));
+                if (!fileName.isEmpty())
+                    customFile->setText(fileName);
+            });
+        }
 
         QCheckBox* verify = new QCheckBox(QStringLiteral("Проверить после записи"));
         verify->setChecked(true);
@@ -1559,19 +1595,10 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         warning->setWordWrap(true);
         layout->addWidget(warning);
 
-        connect(browse, &QPushButton::clicked, &dialog, [customFile]() {
-            const QString fileName = QFileDialog::getOpenFileName(nullptr,
-                QStringLiteral("Выбрать прошивку"),
-                QString(),
-                QStringLiteral("Firmware (*.bin *.hex *.ldr);;All files (*.*)"));
-            if (!fileName.isEmpty())
-                customFile->setText(fileName);
-        });
-
         QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
         buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Прошить"));
         buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
-        buttons->button(QDialogButtonBox::Ok)->setEnabled(!artifacts.isEmpty() || !graphControlled);
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!artifacts.isEmpty() || allowsCustomFirmware);
         connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         layout->addWidget(buttons);
@@ -1583,7 +1610,7 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         const int selectedIndex = artifactCombo->currentData().toInt();
         if (selectedIndex >= 0 && selectedIndex < artifacts.size())
             selected = artifacts.at(selectedIndex);
-        if (!graphControlled && !customFile->text().isEmpty())
+        if (allowsCustomFirmware && customFile && !customFile->text().isEmpty())
         {
             selected.relativePath = customFile->text();
             selected.title = QFileInfo(customFile->text()).fileName();

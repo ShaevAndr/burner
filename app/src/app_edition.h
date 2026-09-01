@@ -37,7 +37,13 @@ inline bool allowsAction(const QString& actionId)
         return true;
 
     return actionId.startsWith(QStringLiteral("flash."))
-        || actionId == QStringLiteral("device.application.load");
+        || actionId == QStringLiteral("device.application.load")
+        || actionId == QStringLiteral("device.ping");
+}
+
+inline bool allowsCustomFirmware()
+{
+    return isInternal();
 }
 }
 

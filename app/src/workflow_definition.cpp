@@ -1,4 +1,6 @@
 #include "workflow_definition.h"
+#include "app_edition.h"
+#include "firmware_access_policy.h"
 
 #include <QCryptographicHash>
 #include <QCoreApplication>
@@ -19,8 +21,20 @@
 
 static QString resolveArtifactPath(const QString& relativePath)
 {
-    if (QFileInfo(relativePath).isAbsolute())
+    if (relativePath.startsWith(QStringLiteral(":/")))
         return relativePath;
+
+    if (QFileInfo(relativePath).isAbsolute())
+        return AppEdition::allowsCustomFirmware() ? relativePath : QString();
+
+    const QString embeddedPath = QStringLiteral(":/") + QDir::cleanPath(relativePath);
+    if (QFileInfo::exists(embeddedPath))
+        return embeddedPath;
+
+#ifdef DEVICE_WORKBENCH_EMBEDDED_PAYLOAD
+    // Catalog paths in production must resolve only to resources compiled into the EXE.
+    return embeddedPath;
+#else
 
     QStringList roots;
     if (QCoreApplication::instance())
@@ -42,6 +56,7 @@ static QString resolveArtifactPath(const QString& relativePath)
             return candidate;
     }
     return QDir(QDir::currentPath()).filePath(relativePath);
+#endif
 }
 
 static QString sha256File(const QString& fileName, QString* error)
@@ -560,11 +575,17 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         }
 
         const bool unknownCurrentFirmware = identity.known && identity.currentFirmwareId.isEmpty();
-        const FirmwareTransitionSpec* transition = unknownCurrentFirmware
-            ? nullptr
-            : identity.transitionTo(mContext.targetFirmwareId);
-        if (!unknownCurrentFirmware && (!transition || !transition->enabled))
+        if (!FirmwareAccessPolicy::isTargetAllowed(identity, mContext.targetFirmwareId))
         {
+            if (FirmwareAccessPolicy::isRestrictedExternalBocV6(identity))
+            {
+                log(QStringLiteral("[%1] external BOC-V-6 policy denied firmware transition %2 -> %3; "
+                                   "only BOCv6_ADCVibr_Digital20260721_1228.hex -> "
+                                   "BOCv6_ADCVibr_Digital20260831_1007.hex is allowed")
+                    .arg(identity.typeHex(), identity.currentFirmwareId, mContext.targetFirmwareId));
+                return false;
+            }
+            const FirmwareTransitionSpec* transition = identity.transitionTo(mContext.targetFirmwareId);
             const QString reason = transition && !transition->reason.isEmpty()
                 ? transition->reason
                 : QStringLiteral("transition is not configured or disabled");

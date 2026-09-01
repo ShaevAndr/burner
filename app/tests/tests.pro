@@ -3,6 +3,8 @@ CONFIG += console c++17 testcase
 TEMPLATE = app
 TARGET = device-workbench-tests
 
+RESOURCES += ../embedded_resources.qrc
+
 SOURCES += \
     tst_device_workbench.cpp \
     ../src/action_repository.cpp \

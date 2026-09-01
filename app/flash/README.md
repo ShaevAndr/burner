@@ -140,10 +140,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-firmware-
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-releases.ps1 -Edition internal
 ```
 
-Сборка сначала сама запускает синхронизацию конфигурации, затем копирует весь
-каталог `app/flash` в соответствующий каталог `releases`.
-Изменять файл только внутри `releases/<edition>/flash` не следует: следующая сборка
-его перезапишет.
+Сборка сначала сама запускает синхронизацию конфигурации, затем формирует
+`app/embedded_resources.qrc` и компилирует весь набор прошивок внутрь `.exe`.
+Каталог `releases/<edition>/flash` не создаётся; заменить прошивку в готовом релизе
+без пересборки приложения нельзя.
 
 ## Проверка перед использованием
 

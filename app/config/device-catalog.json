@@ -89,6 +89,24 @@
       "deviceId": "boc.v6",
       "versions": [
         {
+          "id": "sw-2026-07-21-11-59-00",
+          "title": "БОЦ-В-6 ADC Vibr Digital",
+          "version": "2026-07-21 11:59:00",
+          "descriptionRegex": "\\(SW Jul 21 2026 11:59:00\\)$",
+          "artifact": {
+            "target": "application",
+            "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260721_1228.hex",
+            "sha256": "956ADF340E7A4E3407A31A0C3558697376CB1ABD75B69E9FA938F7A53C1669A9",
+            "format": "intelHex",
+            "addressBase": "0x08040000",
+            "flashNum": 1
+          },
+          "installation": {
+            "workflow": "firmware.application.standard",
+            "strategy": "page-flash"
+          }
+        },
+        {
           "id": "sw-2026-08-31-10-01-24",
           "title": "БОЦ-В-6 ADC Vibr Digital",
           "version": "2026-08-31 10:01:24",
@@ -112,6 +130,21 @@
         {
           "from": "sw-2026-08-31-10-01-24",
           "to": "sw-2026-08-31-10-01-24",
+          "enabled": true
+        },
+        {
+          "from": "sw-2026-07-21-11-59-00",
+          "to": "sw-2026-07-21-11-59-00",
+          "enabled": true
+        },
+        {
+          "from": "sw-2026-07-21-11-59-00",
+          "to": "sw-2026-08-31-10-01-24",
+          "enabled": true
+        },
+        {
+          "from": "sw-2026-08-31-10-01-24",
+          "to": "sw-2026-07-21-11-59-00",
           "enabled": true
         }
       ]
