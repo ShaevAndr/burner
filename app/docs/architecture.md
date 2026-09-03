@@ -1,5 +1,11 @@
 # Архитектура обнови-БОЦ
 
+Целевая переработка модели устройств, операций, workflow и параллельного
+исполнения описана в
+[`docs/superpowers/plans/2026-09-03-device-workflow-refactoring.md`](../../docs/superpowers/plans/2026-09-03-device-workflow-refactoring.md).
+Документ имеет статус черновика для согласования; этот файл пока описывает
+фактически реализованную архитектуру.
+
 Стек: C++17, Qt Widgets, Qt Network, Qt SerialPort. Проект собирается через
 `qmake`.
 
