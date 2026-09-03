@@ -200,7 +200,9 @@ function ConvertTo-ProjectJson {
 function Get-RelativeFirmwareDirectory {
     param([Parameter(Mandatory = $true)]$Catalog)
 
-    $directories = @($Catalog.versions | ForEach-Object {
+    $directories = @($Catalog.versions | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.artifact.relativePath)
+    } | ForEach-Object {
         $path = [string]$_.artifact.relativePath
         if ($path -notmatch '^flash/(?<directory>.+)/[^/]+$') {
             throw "Firmware '$($_.id)' in catalog '$($Catalog.deviceId)' has an unsupported relativePath '$path'"
@@ -227,7 +229,13 @@ $changeMessages = New-Object System.Collections.Generic.List[string]
 
 foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
     $existingVersions = @($catalog.versions)
-    if ($existingVersions.Count -eq 0) {
+    $installableVersions = @($existingVersions | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.artifact.relativePath)
+    })
+    $detectionOnlyVersions = @($existingVersions | Where-Object {
+        [string]::IsNullOrWhiteSpace([string]$_.artifact.relativePath)
+    })
+    if ($installableVersions.Count -eq 0) {
         throw "Catalog '$($catalog.deviceId)' has no template firmware entry"
     }
 
@@ -243,9 +251,9 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         throw "No .hex or .bin firmware files found for '$($catalog.deviceId)' in '$firmwareDirectory'"
     }
 
-    $template = @($existingVersions | Where-Object { $_.artifact.default }) | Select-Object -First 1
+    $template = @($installableVersions | Where-Object { $_.artifact.default }) | Select-Object -First 1
     if (-not $template) {
-        $template = $existingVersions[-1]
+        $template = $installableVersions[-1]
     }
     $existingById = @{}
     foreach ($version in $existingVersions) {
@@ -287,7 +295,7 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         })
     }
 
-    foreach ($oldVersion in $existingVersions) {
+    foreach ($oldVersion in $installableVersions) {
         if (-not $seenFirmwareIds.ContainsKey([string]$oldVersion.id)) {
             $changeMessages.Add("REMOVE $($catalog.deviceId): $($oldVersion.id)")
         }
@@ -302,10 +310,10 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
             $version.artifact.PSObject.Properties.Remove("default")
         }
     }
-    $catalog.versions = $scannedVersions
+    $catalog.versions = @($detectionOnlyVersions) + $scannedVersions
 
     $validFirmwareIds = @{}
-    foreach ($version in $scannedVersions) {
+    foreach ($version in @($catalog.versions)) {
         $validFirmwareIds[[string]$version.id] = $true
     }
     $transitionKeys = @{}
@@ -319,22 +327,145 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         $transitionKeys[$key] = $true
         $newTransitions.Add((Copy-JsonObject -Value $transition))
     }
-    foreach ($from in $scannedVersions) {
-        foreach ($to in $scannedVersions) {
-            $key = "$($from.id)`n$($to.id)"
-            if (-not $transitionKeys.ContainsKey($key)) {
-                $transition = [pscustomobject][ordered]@{
-                    from = [string]$from.id
-                    to = [string]$to.id
-                    enabled = $true
+    $autoTransitions = -not $catalog.PSObject.Properties["autoTransitions"] -or
+        [bool]$catalog.autoTransitions
+    if ($autoTransitions) {
+        foreach ($from in $scannedVersions) {
+            foreach ($to in $scannedVersions) {
+                $key = "$($from.id)`n$($to.id)"
+                if (-not $transitionKeys.ContainsKey($key)) {
+                    $transition = [pscustomobject][ordered]@{
+                        from = [string]$from.id
+                        to = [string]$to.id
+                        enabled = $true
+                    }
+                    $newTransitions.Add($transition)
+                    $transitionKeys[$key] = $true
+                    $changeMessages.Add("ALLOW $($catalog.deviceId): $($from.id) -> $($to.id)")
                 }
-                $newTransitions.Add($transition)
-                $transitionKeys[$key] = $true
-                $changeMessages.Add("ALLOW $($catalog.deviceId): $($from.id) -> $($to.id)")
             }
         }
     }
     $catalog.transitions = @($newTransitions | ForEach-Object { $_ })
+
+    # A bootloader is associated with a device by directory convention:
+    # flash/<device-directory>/bootloader/*.hex|*.bin.  Unlike application
+    # versions, it is a standalone artifact and may be written from any
+    # recognized application version.
+    $existingArtifacts = @($catalog.artifacts | Where-Object { $null -ne $_ })
+    $existingBootloaders = @($existingArtifacts | Where-Object {
+        [string]$_.target -eq "bootloader"
+    })
+    $otherArtifacts = @($existingArtifacts | Where-Object {
+        [string]$_.target -ne "bootloader"
+    })
+    $existingBootloadersByVersion = @{}
+    foreach ($artifact in $existingBootloaders) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$artifact.version)) {
+            $existingBootloadersByVersion[[string]$artifact.version] = $artifact
+        }
+    }
+
+    $bootloaderDirectory = Join-Path $firmwareDirectory "bootloader"
+    $bootloaderFiles = if (Test-Path -LiteralPath $bootloaderDirectory -PathType Container) {
+        @(Get-ChildItem -LiteralPath $bootloaderDirectory -File | Where-Object {
+            $supportedExtensions -contains $_.Extension.ToLowerInvariant()
+        } | Sort-Object Name)
+    } else {
+        @()
+    }
+    $scannedBootloaders = New-Object System.Collections.Generic.List[object]
+    $seenBootloaderVersions = @{}
+    foreach ($file in $bootloaderFiles) {
+        $assignedFiles[$file.FullName.ToLowerInvariant()] = $true
+        $stamp = Get-FirmwareBuildStamp -File $file
+        $versionText = $stamp.DateTime.ToString(
+            "yyyy-MM-dd HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+        if ($seenBootloaderVersions.ContainsKey($versionText)) {
+            throw "Bootloader files '$($seenBootloaderVersions[$versionText])' and '$($file.FullName)' contain the same version '$versionText'"
+        }
+        $seenBootloaderVersions[$versionText] = $file.FullName
+
+        $artifact = if ($existingBootloadersByVersion.ContainsKey($versionText)) {
+            Copy-JsonObject -Value $existingBootloadersByVersion[$versionText]
+        } else {
+            $changeMessages.Add("ADD $($catalog.deviceId) bootloader: $versionText ($($file.Name))")
+            [pscustomobject][ordered]@{
+                target = "bootloader"
+                title = "$($catalog.deviceId) Bootloader"
+                version = $versionText
+                relativePath = ""
+                sha256 = ""
+                format = ""
+                addressBase = "0x08000000"
+                flashNum = 0
+                flashStrategy = "page-flash"
+            }
+        }
+
+        Set-JsonProperty -Object $artifact -Name "target" -Value "bootloader"
+        Set-JsonProperty -Object $artifact -Name "version" -Value $versionText
+        Set-JsonProperty -Object $artifact -Name "relativePath" -Value (
+            "flash/$relativeDirectory/bootloader/$($file.Name)")
+        Set-JsonProperty -Object $artifact -Name "sha256" -Value (
+            (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+        )
+        Set-JsonProperty -Object $artifact -Name "format" -Value $(
+            if ($file.Extension -ieq ".hex") { "intelHex" } else { "binary" }
+        )
+        $scannedBootloaders.Add([pscustomobject]@{
+            DateTime = $stamp.DateTime
+            Artifact = $artifact
+        })
+    }
+
+    foreach ($oldArtifact in $existingBootloaders) {
+        if (-not $seenBootloaderVersions.ContainsKey([string]$oldArtifact.version)) {
+            $changeMessages.Add("REMOVE $($catalog.deviceId) bootloader: $($oldArtifact.version)")
+        }
+    }
+
+    $orderedBootloaders = @($scannedBootloaders | Sort-Object DateTime | ForEach-Object {
+        $_.Artifact
+    })
+    for ($index = 0; $index -lt $orderedBootloaders.Count; ++$index) {
+        $artifact = $orderedBootloaders[$index]
+        if ($index -eq ($orderedBootloaders.Count - 1)) {
+            Set-JsonProperty -Object $artifact -Name "default" -Value $true
+        } elseif ($artifact.PSObject.Properties["default"]) {
+            $artifact.PSObject.Properties.Remove("default")
+        }
+    }
+    $hasStandaloneArtifacts = ($null -ne $catalog.PSObject.Properties["artifacts"]) -or
+        ($otherArtifacts.Count -gt 0) -or ($orderedBootloaders.Count -gt 0)
+    if ($hasStandaloneArtifacts) {
+        Set-JsonProperty -Object $catalog -Name "artifacts" -Value (
+            @($otherArtifacts) + @($orderedBootloaders))
+    }
+
+    foreach ($artifact in @($catalog.artifacts | Where-Object {
+        $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.relativePath)
+    })) {
+        $relativePath = [string]$artifact.relativePath
+        if ($relativePath -notmatch '^flash/(?<path>.+)$') {
+            throw "Artifact in catalog '$($catalog.deviceId)' has an unsupported relativePath '$relativePath'"
+        }
+        $artifactPath = Join-Path $FlashRoot ($Matches["path"] -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "Artifact in catalog '$($catalog.deviceId)' does not exist: $artifactPath"
+        }
+        $artifactFile = Get-Item -LiteralPath $artifactPath
+        if (-not ($supportedExtensions -contains $artifactFile.Extension.ToLowerInvariant())) {
+            throw "Artifact in catalog '$($catalog.deviceId)' uses unsupported format: $artifactPath"
+        }
+        $assignedFiles[$artifactFile.FullName.ToLowerInvariant()] = $true
+        Set-JsonProperty -Object $artifact -Name "sha256" -Value (
+            (Get-FileHash -LiteralPath $artifactFile.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+        )
+        Set-JsonProperty -Object $artifact -Name "format" -Value $(
+            if ($artifactFile.Extension -ieq ".hex") { "intelHex" } else { "binary" }
+        )
+    }
 }
 
 $unassignedFiles = @($allFirmwareFiles | Where-Object {

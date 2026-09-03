@@ -26,6 +26,13 @@ struct FirmwareArtifact
     int pagesCount = 0;
     QString flashStrategy;
     QVariantMap flashParameters;
+    QStringList allowedFromFirmwareIds;
+
+    bool isAllowedFromFirmware(const QString& currentFirmwareId) const
+    {
+        return allowedFromFirmwareIds.isEmpty()
+            || allowedFromFirmwareIds.contains(currentFirmwareId);
+    }
 };
 
 struct FirmwareInstallationSpec
@@ -98,6 +105,7 @@ struct DeviceIdentity
     QVector<FirmwareArtifact> firmwareArtifacts;
     QVector<FirmwareVersionSpec> firmwareVersions;
     QVector<FirmwareTransitionSpec> firmwareTransitions;
+    bool allowUnknownCurrentFirmware = true;
 
     QString typeHex() const
     {
@@ -119,7 +127,8 @@ struct DeviceIdentity
         FirmwareArtifact first;
         for (const FirmwareArtifact& artifact : firmwareArtifacts)
         {
-            if (artifact.target != target)
+            if (artifact.target != target
+                || !artifact.isAllowedFromFirmware(currentFirmwareId))
                 continue;
             if (first.relativePath.isEmpty())
                 first = artifact;
@@ -156,9 +165,9 @@ struct DeviceIdentity
 
         // When the device itself is known but its installed firmware cannot be
         // detected, there is no reliable "from" node for the transition graph.
-        // In that case every firmware declared for this device is available.
+        // Catalog policy decides whether targets may be offered in that case.
         if (known && currentFirmwareId.isEmpty())
-            return true;
+            return allowUnknownCurrentFirmware;
 
         const FirmwareTransitionSpec* transition = transitionTo(targetFirmwareId);
         return transition && transition->enabled;
@@ -187,6 +196,7 @@ struct FirmwareCatalog
     QVector<FirmwareArtifact> firmwareArtifacts;
     QVector<FirmwareVersionSpec> firmwareVersions;
     QVector<FirmwareTransitionSpec> firmwareTransitions;
+    bool allowUnknownCurrentFirmware = true;
 };
 
 struct ActionSpec

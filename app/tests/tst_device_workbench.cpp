@@ -14,6 +14,8 @@
 #include <QTime>
 #include <QUuid>
 
+#include <algorithm>
+
 #include "../src/action_repository.h"
 #include "../src/catalog.h"
 #include "../src/device.h"
@@ -318,6 +320,7 @@ private slots:
     void applicationLoadActionIsAvailableForBootloader();
     void workflowLoadsApplicationFromBootloaderWithoutWaitingForReply();
     void workflowWritesApplicationFlashPagesFromBootloader();
+    void bootloaderWorkflowWritesAndVerifiesFromApplication();
     void workflowParsesIntelHexBeforeWriting();
     void workflowLoadsConfiguredBocV6Firmware();
     void workflowRejectsBootloaderWithDifferentUuid();
@@ -349,6 +352,20 @@ void DeviceWorkbenchTest::embeddedPayloadIsAvailable()
     QVERIFY2(catalog.load(QStringLiteral(":/config/device-catalog.json"), &error), qPrintable(error));
     QVERIFY2(actions.load(QStringLiteral(":/config/actions.json"), &error), qPrintable(error));
     QVERIFY2(workflows.load(QStringLiteral(":/config/workflows.json"), &error), qPrintable(error));
+
+    const WorkflowDefinition* bootloaderWorkflow = workflows.definitionForId(
+        QStringLiteral("firmware.bootloader.direct"));
+    QVERIFY(bootloaderWorkflow);
+    QStringList bootloaderOperations;
+    for (const WorkflowStep& step : bootloaderWorkflow->steps)
+        bootloaderOperations.append(step.op);
+    QCOMPARE(bootloaderOperations, QStringList({
+        QStringLiteral("flash.prepare"),
+        QStringLiteral("flash.validateArtifact"),
+        QStringLiteral("firmware.flash"),
+        QStringLiteral("firmware.verify"),
+        QStringLiteral("workflow.finish")
+    }));
 
     DeviceIdentity identity;
     identity.type = 0x0A03;
@@ -388,8 +405,11 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     QCOMPARE(device.currentFirmwareId, QStringLiteral("sw-2026-07-16-09-24-19"));
     QCOMPARE(device.productionDateRegister, 9);
     QCOMPARE(device.serialNumberRegister, 10);
-    QCOMPARE(device.firmwareVersions.size(), 1);
-    QCOMPARE(device.firmwareTransitions.size(), 1);
+    QCOMPARE(device.firmwareVersions.size(), 3);
+    QCOMPARE(device.firmwareTransitions.size(), 2);
+    QVERIFY(!device.allowUnknownCurrentFirmware);
+    QVERIFY2(device.capabilities.contains(QStringLiteral("flash.bootloader.write")),
+        "A recognized model with a bootloader artifact must receive the flash action automatically");
 
     DeviceIdentity variant = device;
     variant.type = 0;
@@ -417,14 +437,52 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     QCOMPARE(available.at(0).id, QStringLiteral("flash.application.write"));
     QCOMPARE(available.at(0).workflow, QStringLiteral("firmware.application.standard"));
     QCOMPARE(available.at(1).id, QStringLiteral("flash.bootloader.write"));
+    QCOMPARE(available.at(1).workflow, QStringLiteral("firmware.bootloader.direct"));
     QCOMPARE(available.at(2).id, QStringLiteral("device.productionDate.update"));
     QCOMPARE(available.at(3).id, QStringLiteral("device.serialNumber.update"));
     QCOMPARE(available.at(4).id, QStringLiteral("device.ping"));
 
     const FirmwareArtifact defaultApplication = device.firmwareForTarget(QStringLiteral("application"));
     QVERIFY(defaultApplication.isDefault);
-    QCOMPARE(defaultApplication.relativePath, QStringLiteral("flash/boc-v12/BOCv12_ADCVibr_Digital20260818_1450.hex"));
+    QCOMPARE(defaultApplication.relativePath, QStringLiteral("flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex"));
     QCOMPARE(defaultApplication.flashNum, 0);
+
+    const FirmwareArtifact bootloaderArtifact = device.firmwareForTarget(QStringLiteral("bootloader"));
+    QCOMPARE(bootloaderArtifact.relativePath,
+        QStringLiteral("flash/boc-v12/bootloader/BOCv12_GD32F470Z_BootLoader20260820_150326.hex"));
+    QCOMPARE(bootloaderArtifact.sha256,
+        QStringLiteral("35D88F87F3B0529CE606E778C0A4B12DDB0A1B31AF39C22C1DFC81571AD183B0"));
+    QCOMPARE(bootloaderArtifact.flashStrategy, QStringLiteral("page-flash"));
+    QCOMPARE(bootloaderArtifact.allowedFromFirmwareIds, QStringList({
+        QStringLiteral("sw-2026-07-08-12-51-18"),
+        QStringLiteral("sw-2026-07-16-09-24-19"),
+        QStringLiteral("sw-2026-08-31-17-24-51")
+    }));
+
+    const QString latestFirmwareId = QStringLiteral("sw-2026-08-31-17-24-51");
+    QVERIFY(device.isFirmwareTargetAllowed(latestFirmwareId));
+    QVERIFY(!device.isFirmwareTargetAllowed(QStringLiteral("sw-2026-07-16-09-24-19")));
+
+    DeviceIdentity july8 = device;
+    july8.description = QStringLiteral(
+        "Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Jul 08 2026 12:51:18)");
+    july8 = catalog.enrich(july8);
+    QCOMPARE(july8.currentFirmwareId, QStringLiteral("sw-2026-07-08-12-51-18"));
+    QVERIFY(july8.isFirmwareTargetAllowed(latestFirmwareId));
+
+    DeviceIdentity latest = device;
+    latest.description = QStringLiteral(
+        "Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Aug 31 2026 17:24:51)");
+    latest = catalog.enrich(latest);
+    QCOMPARE(latest.currentFirmwareId, latestFirmwareId);
+    QVERIFY(!latest.isFirmwareTargetAllowed(latestFirmwareId));
+
+    DeviceIdentity unknownFirmware = device;
+    unknownFirmware.description = QStringLiteral(
+        "Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Sep 01 2026 00:00:00)");
+    unknownFirmware = catalog.enrich(unknownFirmware);
+    QVERIFY(unknownFirmware.currentFirmwareId.isEmpty());
+    QVERIFY(!unknownFirmware.isFirmwareTargetAllowed(latestFirmwareId));
 }
 
 void DeviceWorkbenchTest::catalogRecognizesBocV6()
@@ -987,13 +1045,17 @@ void DeviceWorkbenchTest::applicationLoadActionIsAvailableForBootloader()
 
     bool hasLoadApplication = false;
     bool hasApplicationFlash = false;
+    bool hasBootloaderFlash = false;
     for (const ActionSpec& action : actions.actionsForDevice(bootloader))
     {
         hasLoadApplication = hasLoadApplication || action.id == QStringLiteral("device.application.load");
         hasApplicationFlash = hasApplicationFlash || action.id == QStringLiteral("flash.application.write");
+        hasBootloaderFlash = hasBootloaderFlash || action.id == QStringLiteral("flash.bootloader.write");
     }
     QVERIFY2(hasApplicationFlash, "Bootloader devices must expose application flash action");
     QVERIFY2(hasLoadApplication, "Bootloader devices must expose load application action");
+    QVERIFY2(!hasBootloaderFlash,
+        "Bootloader flash must only be available from the main application");
 
     DeviceIdentity bocV6Bootloader;
     bocV6Bootloader.type = 0x1000;
@@ -1132,6 +1194,101 @@ void DeviceWorkbenchTest::workflowWritesApplicationFlashPagesFromBootloader()
     QCOMPARE(transport->flashWrites.at(1).page.left(952), firmware.mid(2048));
     QCOMPARE(quint8(transport->flashWrites.at(1).page.at(952)), quint8(0xFF));
     QCOMPARE(transport->flashReads.size(), 2);
+}
+
+void DeviceWorkbenchTest::bootloaderWorkflowWritesAndVerifiesFromApplication()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    QVERIFY(QDir(tempDir.path()).mkpath(QStringLiteral("flash/boc-v12/bootloader")));
+
+    const QByteArray firmware(3000, char(0x5A));
+    const QString firmwarePath = QDir(tempDir.path()).filePath(
+        QStringLiteral("flash/boc-v12/bootloader/bootloader.bin"));
+    QFile firmwareFile(firmwarePath);
+    QVERIFY(firmwareFile.open(QIODevice::WriteOnly));
+    QCOMPARE(firmwareFile.write(firmware), qint64(firmware.size()));
+    firmwareFile.close();
+
+    FirmwareArtifact artifact;
+    artifact.target = QStringLiteral("bootloader");
+    artifact.relativePath = QStringLiteral("flash/boc-v12/bootloader/bootloader.bin");
+    artifact.sha256 = sha256Hex(firmware);
+    artifact.isDefault = true;
+    artifact.flashNum = 0;
+    artifact.flashStrategy = QStringLiteral("page-flash");
+    artifact.allowedFromFirmwareIds = QStringList{QStringLiteral("application.allowed")};
+
+    DeviceIdentity identity;
+    identity.id = QStringLiteral("boc.v12");
+    identity.type = 0x0A03;
+    identity.version = 0x0001;
+    identity.known = true;
+    identity.catalogId = QStringLiteral("boc.v12");
+    identity.name = QStringLiteral("БОЦ-В-12");
+    identity.state = QStringLiteral("application");
+    identity.currentFirmwareId = QStringLiteral("application.allowed");
+    identity.endpoint = QStringLiteral("192.168.1.245:2001");
+    identity.firmwareArtifacts = {artifact};
+
+    ActionSpec action;
+    action.id = QStringLiteral("flash.bootloader.write");
+    action.title = QStringLiteral("Прошить bootloader");
+    action.workflow = QStringLiteral("firmware.bootloader.direct");
+    action.target = QStringLiteral("bootloader");
+
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    transport->flashParams = {FlashMemoryParams{4, 2048}};
+    DeviceFactory factory(transport);
+    const std::shared_ptr<DeviceBase> device = factory.create(identity);
+    QVERIFY(device);
+
+    WorkflowRepository workflows;
+    QString workflowError;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")),
+        &workflowError), qPrintable(workflowError));
+    WorkflowRunner runner(&workflows);
+    QStringList workflowLogs;
+    connect(&runner, &WorkflowRunner::logMessage, this,
+        [&workflowLogs](const QString& message) { workflowLogs.append(message); });
+
+    QVariantMap artifactMap;
+    artifactMap.insert(QStringLiteral("target"), artifact.target);
+    artifactMap.insert(QStringLiteral("relativePath"), artifact.relativePath);
+    artifactMap.insert(QStringLiteral("sha256"), artifact.sha256);
+    artifactMap.insert(QStringLiteral("flashNum"), artifact.flashNum);
+    artifactMap.insert(QStringLiteral("flashStrategy"), artifact.flashStrategy);
+    artifactMap.insert(QStringLiteral("allowedFromFirmwareIds"),
+        artifact.allowedFromFirmwareIds);
+    QVariantMap parameters;
+    parameters.insert(QStringLiteral("artifact"), artifactMap);
+
+    const QString previousCurrentPath = QDir::currentPath();
+    QDir::setCurrent(tempDir.path());
+    const bool successful = runner.run(action, {device}, parameters);
+    QDir::setCurrent(previousCurrentPath);
+
+    QVERIFY(successful);
+    QCOMPARE(transport->resetCalls, 0);
+    QCOMPARE(transport->writes.size(), 0);
+    QCOMPARE(transport->noReplyWrites.size(), 0);
+    QCOMPARE(transport->flashWrites.size(), 2);
+    QCOMPARE(transport->flashReads.size(), 2);
+    QCOMPARE(transport->flashWrites.at(0).flashNum, 0);
+    QCOMPARE(transport->flashWrites.at(1).flashNum, 0);
+
+    DeviceIdentity blockedIdentity = device->identity();
+    blockedIdentity.currentFirmwareId = QStringLiteral("application.blocked");
+    device->updateIdentity(blockedIdentity);
+    const int writesBeforeBlockedRun = transport->flashWrites.size();
+    const int readsBeforeBlockedRun = transport->flashReads.size();
+    QVERIFY(!runner.run(action, {device}, parameters));
+    QCOMPARE(transport->flashWrites.size(), writesBeforeBlockedRun);
+    QCOMPARE(transport->flashReads.size(), readsBeforeBlockedRun);
+    QVERIFY(std::any_of(workflowLogs.cbegin(), workflowLogs.cend(),
+        [](const QString& message) {
+            return message.contains(QStringLiteral("is not allowed from current application"));
+        }));
 }
 
 void DeviceWorkbenchTest::workflowParsesIntelHexBeforeWriting()

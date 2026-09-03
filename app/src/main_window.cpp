@@ -73,6 +73,7 @@ enum MainPages
 {
     DiscoveryPage = 0,
     FirmwarePage,
+    BootloaderPage,
     ProductionDatePage,
     SerialNumberPage
 };
@@ -173,7 +174,8 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
 
     for (const FirmwareArtifact& artifact : firstIdentity.firmwareArtifacts)
     {
-        if (artifact.target == target)
+        if (artifact.target == target
+            && artifact.isAllowedFromFirmware(firstIdentity.currentFirmwareId))
             artifacts.append(artifact);
     }
 
@@ -197,7 +199,10 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
                     && candidate.relativePath.compare(other.relativePath, Qt::CaseInsensitive) == 0;
                 const bool sameHash = !candidate.sha256.isEmpty()
                     && candidate.sha256.compare(other.sha256, Qt::CaseInsensitive) == 0;
-                if (other.target == target && (sameFirmwareId || samePath || sameHash))
+                if (other.target == target
+                    && other.isAllowedFromFirmware(
+                        devices.at(deviceIndex)->identity().currentFirmwareId)
+                    && (sameFirmwareId || samePath || sameHash))
                 {
                     common.append(candidate);
                     break;
@@ -239,6 +244,7 @@ static QVariantMap artifactToMap(const FirmwareArtifact& artifact)
     map.insert(QStringLiteral("pagesCount"), artifact.pagesCount);
     map.insert(QStringLiteral("flashStrategy"), artifact.flashStrategy);
     map.insert(QStringLiteral("flashParameters"), artifact.flashParameters);
+    map.insert(QStringLiteral("allowedFromFirmwareIds"), artifact.allowedFromFirmwareIds);
     return map;
 }
 
@@ -297,6 +303,7 @@ void MainWindow::buildUi()
     mPages->setObjectName(QStringLiteral("main"));
     mPages->addWidget(buildDiscoveryPage());
     mPages->addWidget(buildFirmwarePage());
+    mPages->addWidget(buildBootloaderPage());
     if (AppEdition::isInternal())
     {
         mPages->addWidget(buildProductionDatePage());
@@ -309,6 +316,9 @@ void MainWindow::buildUi()
     });
     connect(mFirmwareTabButton, &QPushButton::clicked, this, [this]() {
         showPage(FirmwarePage);
+    });
+    connect(mBootloaderTabButton, &QPushButton::clicked, this, [this]() {
+        showPage(BootloaderPage);
     });
     if (mProductionDateButton)
     {
@@ -373,8 +383,12 @@ QWidget* MainWindow::buildSidebar()
     mFirmwareTabButton = new QPushButton(QStringLiteral("Прошивки"));
     mFirmwareTabButton->setObjectName(QStringLiteral("nav"));
     mFirmwareTabButton->setCheckable(true);
+    mBootloaderTabButton = new QPushButton(QStringLiteral("Прошивка bootloader"));
+    mBootloaderTabButton->setObjectName(QStringLiteral("nav"));
+    mBootloaderTabButton->setCheckable(true);
     layout->addWidget(mDiscoveryTabButton);
     layout->addWidget(mFirmwareTabButton);
+    layout->addWidget(mBootloaderTabButton);
 
     if (AppEdition::isInternal())
     {
@@ -466,6 +480,26 @@ QWidget* MainWindow::buildFirmwarePage()
     logs->addWidget(transportPane);
     logs->setSizes({620, 420});
     layout->addWidget(logs, 2);
+    return page;
+}
+
+QWidget* MainWindow::buildBootloaderPage()
+{
+    QWidget* page = new QWidget;
+    page->setObjectName(QStringLiteral("page"));
+    QVBoxLayout* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(22, 16, 22, 18);
+    layout->setSpacing(14);
+
+    QLabel* h1 = new QLabel(QStringLiteral("Прошивка bootloader"));
+    h1->setObjectName(QStringLiteral("h1"));
+    QLabel* subtitle = new QLabel(QStringLiteral(
+        "Bootloader записывается напрямую из основного приложения и проверяется чтением flash."));
+    subtitle->setObjectName(QStringLiteral("subtitle"));
+    layout->addWidget(h1);
+    layout->addWidget(subtitle);
+    layout->addWidget(buildWorkflowProgressPanel());
+    layout->addWidget(buildBootloaderTablePanel(), 1);
     return page;
 }
 
@@ -728,6 +762,39 @@ QWidget* MainWindow::buildFirmwareTablePanel()
     return frame;
 }
 
+QWidget* MainWindow::buildBootloaderTablePanel()
+{
+    QFrame* frame = new QFrame;
+    frame->setObjectName(QStringLiteral("band"));
+    QVBoxLayout* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    QWidget* toolbar = new QWidget;
+    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(14, 12, 14, 12);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Устройства в основном приложении</b>")));
+    toolbarLayout->addStretch();
+    mBulkBootloaderButton = new QPushButton(QStringLiteral("Прошить bootloader выбранным"));
+    mBulkBootloaderButton->setObjectName(QStringLiteral("primary"));
+    mBulkBootloaderButton->setAttribute(Qt::WA_AlwaysShowToolTips);
+    toolbarLayout->addWidget(mBulkBootloaderButton);
+    layout->addWidget(toolbar);
+
+    mBootloaderTable = new QTableWidget(0, DeviceActionColumnCount);
+    configureDeviceActionTable(mBootloaderTable, true);
+    layout->addWidget(mBootloaderTable, 1);
+
+    connect(mBootloaderTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
+    connect(mBootloaderTable->horizontalHeader(), &QHeaderView::sectionResized,
+        mBootloaderTable, [this]() {
+            mBootloaderTable->resizeRowsToContents();
+        });
+    connect(mBulkBootloaderButton, &QPushButton::clicked,
+        this, &MainWindow::runBootloaderUpdate);
+    return frame;
+}
+
 QWidget* MainWindow::buildProductionDateTablePanel()
 {
     QFrame* frame = new QFrame;
@@ -796,6 +863,8 @@ void MainWindow::startDiscovery()
     mDevices.clear();
     mDiscoveryTable->setRowCount(0);
     mFirmwareTable->setRowCount(0);
+    if (mBootloaderTable)
+        mBootloaderTable->setRowCount(0);
     if (mProductionDateTable)
         mProductionDateTable->setRowCount(0);
     if (mSerialNumberTable)
@@ -1011,6 +1080,7 @@ void MainWindow::updateLineMode()
 void MainWindow::updateBulkMenu()
 {
     rebuildBulkMenu();
+    rebuildBootloaderBulkAction();
     rebuildProductionDateBulkAction();
     updateNavigationActions();
 }
@@ -1048,6 +1118,7 @@ void MainWindow::showPage(int pageIndex)
     mPages->setCurrentIndex(pageIndex);
     mDiscoveryTabButton->setChecked(pageIndex == DiscoveryPage);
     mFirmwareTabButton->setChecked(pageIndex == FirmwarePage);
+    mBootloaderTabButton->setChecked(pageIndex == BootloaderPage);
     if (mProductionDateButton)
         mProductionDateButton->setChecked(pageIndex == ProductionDatePage);
     if (mSerialNumberButton)
@@ -1056,6 +1127,17 @@ void MainWindow::showPage(int pageIndex)
 
 void MainWindow::updateNavigationActions()
 {
+    const QVector<std::shared_ptr<DeviceBase>> bootloaderDevices = devicesForAction(
+        QStringLiteral("flash.bootloader.write"));
+    if (mBootloaderTabButton)
+    {
+        mBootloaderTabButton->setEnabled(true);
+        mBootloaderTabButton->setToolTip(bootloaderDevices.isEmpty()
+            ? QStringLiteral("Открыть прошивку bootloader: совместимые устройства пока не найдены")
+            : QStringLiteral("Открыть прошивку bootloader для %1 совместимых устройств")
+                .arg(bootloaderDevices.size()));
+    }
+
     if (!mProductionDateButton || !mSerialNumberButton)
         return;
 
@@ -1086,6 +1168,19 @@ void MainWindow::runProductionDateUpdate()
         return;
     }
     executeAction(actionById(QStringLiteral("device.productionDate.update")), devices);
+}
+
+void MainWindow::runBootloaderUpdate()
+{
+    const QVector<std::shared_ptr<DeviceBase>> devices = selectedBootloaderDevices();
+    if (devices.isEmpty())
+    {
+        QMessageBox::information(this,
+            QStringLiteral("Прошивка bootloader"),
+            QStringLiteral("Отметьте хотя бы одно доступное устройство в первом столбце."));
+        return;
+    }
+    executeAction(actionById(QStringLiteral("flash.bootloader.write")), devices);
 }
 
 void MainWindow::runActionForRow(int row, const QString& actionId)
@@ -1486,14 +1581,21 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         const QVector<FirmwareArtifact> artifacts = artifactsForTarget(devices, action.target);
         const bool graphControlled = action.target == QStringLiteral("application")
             && devices.first() && !devices.first()->identity().firmwareVersions.isEmpty();
-        const bool allowsCustomFirmware = AppEdition::allowsCustomFirmware() && !graphControlled;
+        const bool bootloaderFlash = action.target == QStringLiteral("bootloader");
+        const bool allowsCustomFirmware = AppEdition::allowsCustomFirmware()
+            && !graphControlled && !bootloaderFlash;
         bool hasUnknownCurrentFirmware = false;
+        bool hasBlockedUnknownCurrentFirmware = false;
         bool hasRestrictedExternalBocV6 = false;
         for (const std::shared_ptr<DeviceBase>& device : devices)
         {
             if (device && device->identity().known
                 && device->identity().currentFirmwareId.isEmpty())
+            {
                 hasUnknownCurrentFirmware = true;
+                hasBlockedUnknownCurrentFirmware = hasBlockedUnknownCurrentFirmware
+                    || !device->identity().allowUnknownCurrentFirmware;
+            }
             if (device && FirmwareAccessPolicy::isRestrictedExternalBocV6(device->identity()))
                 hasRestrictedExternalBocV6 = true;
         }
@@ -1511,6 +1613,11 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
                 : QStringLiteral("Во внешней версии обновление до "
                                  "BOCv6_ADCVibr_Digital20260831_1007 доступно только с версии "
                                  "BOCv6_ADCVibr_Digital20260721_1228.");
+        }
+        else if (graphControlled && hasBlockedUnknownCurrentFirmware)
+        {
+            introText = QStringLiteral("Версия текущей прошивки не определена. "
+                "Обновление для этого устройства запрещено.");
         }
         else if (graphControlled && devices.size() == 1)
         {
@@ -1584,7 +1691,7 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
 
         QCheckBox* verify = new QCheckBox(QStringLiteral("Проверить после записи"));
         verify->setChecked(true);
-        verify->setVisible(!graphControlled);
+        verify->setVisible(!graphControlled && !bootloaderFlash);
         form->addRow(QString(), verify);
         layout->addLayout(form);
 
@@ -1592,6 +1699,9 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         if (graphControlled)
             warning->setText(QStringLiteral("Порядок reset, flash, verify, restart и ожидания application "
                 "задаётся выбранной прошивкой."));
+        else if (bootloaderFlash)
+            warning->setText(QStringLiteral("Bootloader будет записан напрямую из основного приложения "
+                "и обязательно проверен чтением записанных страниц."));
         warning->setWordWrap(true);
         layout->addWidget(warning);
 
@@ -1629,7 +1739,8 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         if (!selected.firmwareId.isEmpty())
             parameters->insert(QStringLiteral("targetFirmwareId"), selected.firmwareId);
         if (!graphControlled)
-            parameters->insert(QStringLiteral("verifyAfterWrite"), verify->isChecked());
+            parameters->insert(QStringLiteral("verifyAfterWrite"),
+                bootloaderFlash || verify->isChecked());
         return true;
     }
 
@@ -1645,6 +1756,8 @@ void MainWindow::addDeviceRow(const std::shared_ptr<DeviceBase>& device)
     const int row = mDevices.size() - 1;
     mDiscoveryTable->insertRow(row);
     mFirmwareTable->insertRow(row);
+    if (mBootloaderTable)
+        mBootloaderTable->insertRow(row);
     if (mProductionDateTable)
         mProductionDateTable->insertRow(row);
     if (mSerialNumberTable)
@@ -1656,6 +1769,8 @@ void MainWindow::updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& dev
 {
     updateDiscoveryDeviceRow(row, device);
     updateFirmwareDeviceRow(row, device);
+    if (mBootloaderTable)
+        updateBootloaderDeviceRow(row, device);
     if (mProductionDateTable)
         updateProductionDateDeviceRow(row, device);
     if (mSerialNumberTable)
@@ -1851,6 +1966,12 @@ void MainWindow::updateProductionDateDeviceRow(int row, const std::shared_ptr<De
         QStringLiteral("device.productionDate.update"), true);
 }
 
+void MainWindow::updateBootloaderDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
+{
+    updateDeviceActionRow(mBootloaderTable, row, device,
+        QStringLiteral("flash.bootloader.write"), true);
+}
+
 void MainWindow::updateSerialNumberDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
 {
     updateDeviceActionRow(mSerialNumberTable, row, device,
@@ -1880,6 +2001,10 @@ void MainWindow::updateDeviceActionRow(QTableWidget* table,
         canPing = canPing || spec.id == QStringLiteral("device.ping");
         supportsAction = supportsAction || spec.id == actionId;
     }
+    const bool bootloaderAction = actionId == QStringLiteral("flash.bootloader.write");
+    if (bootloaderAction)
+        supportsAction = supportsAction
+            && !artifactsForTarget({device}, QStringLiteral("bootloader")).isEmpty();
     const bool deviceBusy = isDeviceBusy(device);
 
     QTableWidgetItem* check = new QTableWidgetItem;
@@ -1891,11 +2016,17 @@ void MainWindow::updateDeviceActionRow(QTableWidget* table,
             flags |= Qt::ItemIsEnabled;
         check->setFlags(flags);
         check->setCheckState(supportsAction ? previousCheckState : Qt::Unchecked);
+        const QString selectionHint = bootloaderAction
+            ? QStringLiteral("Выбрать устройство для групповой прошивки bootloader")
+            : QStringLiteral("Выбрать устройство для групповой смены даты");
+        const QString unavailableHint = bootloaderAction
+            ? QStringLiteral("Прошивка bootloader доступна для опознанного устройства в основном приложении, если для его модели есть файл bootloader")
+            : QStringLiteral("Смена даты недоступна для этого устройства");
         check->setToolTip(supportsAction
             ? (deviceBusy
                 ? QStringLiteral("Устройство занято текущей операцией")
-                : QStringLiteral("Выбрать устройство для групповой смены даты"))
-            : QStringLiteral("Смена даты недоступна для этого устройства"));
+                : selectionHint)
+            : unavailableHint);
     }
     else
     {
@@ -1941,14 +2072,18 @@ void MainWindow::updateDeviceActionRow(QTableWidget* table,
     });
 
     const bool productionDateAction = actionId == QStringLiteral("device.productionDate.update");
-    const QString actionName = productionDateAction
-        ? QStringLiteral("Изменить дату производства")
-        : QStringLiteral("Изменить номер устройства");
+    const QString actionName = bootloaderAction
+        ? QStringLiteral("Прошить bootloader")
+        : (productionDateAction
+            ? QStringLiteral("Изменить дату производства")
+            : QStringLiteral("Изменить номер устройства"));
     QPushButton* actionButton = new QPushButton;
     actionButton->setObjectName(QStringLiteral("tableFlash"));
-    actionButton->setIcon(style()->standardIcon(productionDateAction
-        ? QStyle::SP_FileDialogDetailedView
-        : QStyle::SP_FileDialogContentsView));
+    actionButton->setIcon(style()->standardIcon(bootloaderAction
+        ? QStyle::SP_ArrowDown
+        : (productionDateAction
+            ? QStyle::SP_FileDialogDetailedView
+            : QStyle::SP_FileDialogContentsView)));
     actionButton->setIconSize(QSize(18, 18));
     actionButton->setAccessibleName(actionName);
     actionButton->setAttribute(Qt::WA_AlwaysShowToolTips);
@@ -1990,6 +2125,21 @@ QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedProductionDateDevices()
     for (int row = 0; row < mProductionDateTable->rowCount() && row < mDevices.size(); ++row)
     {
         const QTableWidgetItem* item = mProductionDateTable->item(row, DeviceActionCheck);
+        if (item && item->checkState() == Qt::Checked)
+            selected.append(mDevices.at(row));
+    }
+    return selected;
+}
+
+QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedBootloaderDevices() const
+{
+    QVector<std::shared_ptr<DeviceBase>> selected;
+    if (!mBootloaderTable)
+        return selected;
+
+    for (int row = 0; row < mBootloaderTable->rowCount() && row < mDevices.size(); ++row)
+    {
+        const QTableWidgetItem* item = mBootloaderTable->item(row, DeviceActionCheck);
         if (item && item->checkState() == Qt::Checked)
             selected.append(mDevices.at(row));
     }
@@ -2163,10 +2313,53 @@ void MainWindow::rebuildProductionDateBulkAction()
     mBulkProductionDateButton->setEnabled(allSupported && !hasBusyDevice && !mWorkflowThread);
 }
 
+void MainWindow::rebuildBootloaderBulkAction()
+{
+    if (!mBulkBootloaderButton)
+        return;
+
+    const QVector<std::shared_ptr<DeviceBase>> selected = selectedBootloaderDevices();
+    bool hasBusyDevice = false;
+    bool allSupported = !selected.isEmpty();
+    for (const std::shared_ptr<DeviceBase>& device : selected)
+    {
+        hasBusyDevice = hasBusyDevice || isDeviceBusy(device);
+        bool supported = false;
+        if (device)
+        {
+            const QVector<ActionSpec> actions = mServices->actions().actionsForDevice(device->identity());
+            for (const ActionSpec& action : actions)
+                supported = supported || action.id == QStringLiteral("flash.bootloader.write");
+            supported = supported
+                && !artifactsForTarget({device}, QStringLiteral("bootloader")).isEmpty();
+        }
+        allSupported = allSupported && supported;
+    }
+
+    mBulkBootloaderButton->setText(selected.isEmpty()
+        ? QStringLiteral("Прошить bootloader выбранным")
+        : QStringLiteral("Прошить bootloader выбранным (%1)").arg(selected.size()));
+    if (selected.isEmpty())
+        mBulkBootloaderButton->setToolTip(
+            QStringLiteral("Выберите устройства флажками в первом столбце"));
+    else if (hasBusyDevice)
+        mBulkBootloaderButton->setToolTip(
+            QStringLiteral("Дождитесь завершения операции с выбранным устройством"));
+    else if (!allSupported)
+        mBulkBootloaderButton->setToolTip(
+            QStringLiteral("Прошивка bootloader недоступна для одного из выбранных устройств"));
+    else
+        mBulkBootloaderButton->setToolTip(
+            QStringLiteral("Записать и проверить bootloader на выбранных устройствах параллельно"));
+    mBulkBootloaderButton->setEnabled(allSupported && !hasBusyDevice && !mWorkflowThread);
+}
+
 void MainWindow::setActionBusy(bool busy)
 {
     if (mBulkFlashButton)
         mBulkFlashButton->setEnabled(false);
+    if (mBulkBootloaderButton)
+        mBulkBootloaderButton->setEnabled(false);
     if (mBulkProductionDateButton)
         mBulkProductionDateButton->setEnabled(false);
     for (int row = 0; row < mDevices.size(); ++row)

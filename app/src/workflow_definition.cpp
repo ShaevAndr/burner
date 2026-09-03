@@ -133,6 +133,8 @@ static FirmwareArtifact artifactFromVariant(const QVariantMap& map, const Firmwa
     artifact.pagesCount = map.value(QStringLiteral("pagesCount"), artifact.pagesCount).toInt();
     artifact.flashStrategy = map.value(QStringLiteral("flashStrategy"), artifact.flashStrategy).toString();
     artifact.flashParameters = map.value(QStringLiteral("flashParameters"), artifact.flashParameters).toMap();
+    artifact.allowedFromFirmwareIds = map.value(
+        QStringLiteral("allowedFromFirmwareIds"), artifact.allowedFromFirmwareIds).toStringList();
     return artifact;
 }
 
@@ -1008,6 +1010,16 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 
     if (step.op == QStringLiteral("flash.validateArtifact"))
     {
+        if (!mContext.flashPlan.artifact.isAllowedFromFirmware(identity.currentFirmwareId))
+        {
+            log(QStringLiteral("[%1] firmware %2 is not allowed from current application %3")
+                .arg(identity.typeHex(), mContext.flashPlan.artifact.version,
+                    identity.currentFirmwareId.isEmpty()
+                        ? QStringLiteral("unknown")
+                        : identity.currentFirmwareId));
+            reportProgressStage(identity, QStringLiteral("firmware source version is not allowed"));
+            return false;
+        }
         if (!mContext.flashPlan.artifact.relativePath.isEmpty())
         {
             log(QStringLiteral("[%1] firmware %2 version=%3 sha256=%4")

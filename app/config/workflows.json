@@ -200,6 +200,26 @@
       ]
     },
     {
+      "id": "firmware.bootloader.direct",
+      "steps": [
+        {
+          "op": "flash.prepare"
+        },
+        {
+          "op": "flash.validateArtifact"
+        },
+        {
+          "op": "firmware.flash"
+        },
+        {
+          "op": "firmware.verify"
+        },
+        {
+          "op": "workflow.finish"
+        }
+      ]
+    },
+    {
       "id": "flash.write",
       "steps": [
         {

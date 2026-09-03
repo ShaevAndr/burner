@@ -21,11 +21,12 @@
     },
     {
       "id": "flash.bootloader.write",
-      "title": "Записать bootloader flash",
+      "title": "Прошить bootloader",
       "selection": "many",
       "dangerLevel": "high",
       "when": {
-        "capabilitiesAll": ["flash.bootloader.write"]
+        "capabilitiesAll": ["flash.bootloader.write"],
+        "statesAny": ["application"]
       },
       "inputs": [
         {
@@ -40,7 +41,7 @@
           "default": true
         }
       ],
-      "workflow": "flash.write"
+      "workflow": "firmware.bootloader.direct"
     }
   ]
 }

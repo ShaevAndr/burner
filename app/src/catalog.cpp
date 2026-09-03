@@ -74,6 +74,14 @@ static FirmwareArtifact artifactFromObject(const QJsonObject& object,
     artifact.pagesCount = object.value(QStringLiteral("pagesCount")).toInt(0);
     artifact.flashStrategy = object.value(QStringLiteral("flashStrategy")).toString().trimmed();
     artifact.flashParameters = object.value(QStringLiteral("flashParameters")).toObject().toVariantMap();
+    const QJsonArray allowedFromFirmwareIds = object.value(
+        QStringLiteral("allowedFromFirmwareIds")).toArray();
+    for (const QJsonValue& firmwareId : allowedFromFirmwareIds)
+    {
+        const QString id = firmwareId.toString().trimmed();
+        if (!id.isEmpty())
+            artifact.allowedFromFirmwareIds.append(id);
+    }
     return artifact;
 }
 
@@ -83,6 +91,8 @@ static bool parseFirmwareCatalog(const QJsonObject& object, FirmwareCatalog* cat
         return false;
 
     catalog->deviceId = object.value(QStringLiteral("deviceId")).toString().trimmed();
+    catalog->allowUnknownCurrentFirmware = object.value(
+        QStringLiteral("allowUnknownCurrentFirmware")).toBool(true);
 
     const QJsonArray artifacts = object.value(QStringLiteral("artifacts")).toArray();
     for (const QJsonValue& artifactValue : artifacts)
@@ -354,6 +364,7 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
     device.firmwareArtifacts.clear();
     device.firmwareVersions.clear();
     device.firmwareTransitions.clear();
+    device.allowUnknownCurrentFirmware = true;
 
     if (!entry)
     {
@@ -386,6 +397,22 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
     device.firmwareArtifacts = firmwareIt->firmwareArtifacts;
     device.firmwareVersions = firmwareIt->firmwareVersions;
     device.firmwareTransitions = firmwareIt->firmwareTransitions;
+    device.allowUnknownCurrentFirmware = firmwareIt->allowUnknownCurrentFirmware;
+
+    // Bootloader flashing is data-driven: every recognized application gets
+    // the action as soon as its firmware catalog contains a bootloader image.
+    // This keeps adding a new device to app/flash independent from a manually
+    // maintained capability flag in the device entry.
+    for (const FirmwareArtifact& artifact : device.firmwareArtifacts)
+    {
+        if (artifact.target == QStringLiteral("bootloader")
+            && !artifact.relativePath.isEmpty())
+        {
+            if (!device.capabilities.contains(QStringLiteral("flash.bootloader.write")))
+                device.capabilities.append(QStringLiteral("flash.bootloader.write"));
+            break;
+        }
+    }
 
     QStringList matchedFirmwareIds;
     for (const FirmwareVersionSpec& firmware : device.firmwareVersions)

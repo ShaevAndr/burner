@@ -20,7 +20,6 @@
         "identity.read",
         "device.ping",
         "flash.application.write",
-        "flash.bootloader.write",
         "device.productionDate.update",
         "device.serialNumber.update",
         "device.application.load"
@@ -56,7 +55,34 @@
   "firmwareCatalogs": [
     {
       "deviceId": "boc.v12",
+      "allowUnknownCurrentFirmware": false,
+      "autoTransitions": false,
+      "artifacts": [
+        {
+          "target": "bootloader",
+          "title": "БОЦ-В-12 Bootloader",
+          "version": "2026-08-20 15:03:26",
+          "relativePath": "flash/boc-v12/bootloader/BOCv12_GD32F470Z_BootLoader20260820_150326.hex",
+          "sha256": "35D88F87F3B0529CE606E778C0A4B12DDB0A1B31AF39C22C1DFC81571AD183B0",
+          "format": "intelHex",
+          "addressBase": "0x08000000",
+          "default": true,
+          "flashNum": 0,
+          "flashStrategy": "page-flash",
+          "allowedFromFirmwareIds": [
+            "sw-2026-07-08-12-51-18",
+            "sw-2026-07-16-09-24-19",
+            "sw-2026-08-31-17-24-51"
+          ]
+        }
+      ],
       "versions": [
+        {
+          "id": "sw-2026-07-08-12-51-18",
+          "title": "БОЦ-В-12 ADC Vibr Digital",
+          "version": "2026-07-08 12:51:18",
+          "descriptionRegex": "\\(SW Jul 08 2026 12:51:18\\)$"
+        },
         {
           "id": "sw-2026-07-16-09-24-19",
           "title": "БОЦ-В-12 ADC Vibr Digital",
@@ -65,7 +91,25 @@
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260818_1450.hex",
-            "sha256": "6B3944A16EBA01AB304CC267BA99F411A7197409EF84572065E0CB01DC665426",
+            "sha256": "0C1061E0F77B4E3ADDBE2CAC9EC498AC71C8A7E9E2B0D0D5393667599F996479",
+            "format": "intelHex",
+            "addressBase": "0x08000000",
+            "flashNum": 0
+          },
+          "installation": {
+            "workflow": "firmware.application.standard",
+            "strategy": "page-flash"
+          }
+        },
+        {
+          "id": "sw-2026-08-31-17-24-51",
+          "title": "БОЦ-В-12 ADC Vibr Digital",
+          "version": "2026-08-31 17:24:51",
+          "descriptionRegex": "\\(SW Aug 31 2026 17:24:51\\)$",
+          "artifact": {
+            "target": "application",
+            "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex",
+            "sha256": "E1D396AF5E4A50B7B53FE465E7EEDECDDE74CFDCD76D4BCBB85C24EF0903BF41",
             "format": "intelHex",
             "addressBase": "0x08000000",
             "default": true,
@@ -79,8 +123,13 @@
       ],
       "transitions": [
         {
+          "from": "sw-2026-07-08-12-51-18",
+          "to": "sw-2026-08-31-17-24-51",
+          "enabled": true
+        },
+        {
           "from": "sw-2026-07-16-09-24-19",
-          "to": "sw-2026-07-16-09-24-19",
+          "to": "sw-2026-08-31-17-24-51",
           "enabled": true
         }
       ]
