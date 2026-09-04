@@ -67,7 +67,7 @@
           "format": "intelHex",
           "addressBase": "0x08000000",
           "default": true,
-          "flashNum": 0,
+          "flashNum": 1,
           "flashStrategy": "page-flash",
           "allowedFromFirmwareIds": [
             "sw-2026-07-08-12-51-18",
@@ -81,20 +81,20 @@
           "id": "sw-2026-07-08-12-51-18",
           "title": "БОЦ-В-12 ADC Vibr Digital",
           "version": "2026-07-08 12:51:18",
-          "descriptionRegex": "\\(SW Jul 08 2026 12:51:18\\)$"
+          "descriptionRegex": "\\(SW Jul  8 2026 12:51:18\\)$"
         },
         {
-          "id": "sw-2026-07-16-09-24-19",
+          "id": "sw-2026-07-15-19-10-21",
           "title": "БОЦ-В-12 ADC Vibr Digital",
-          "version": "2026-07-16 09:24:19",
-          "descriptionRegex": "\\(SW Jul 16 2026 09:24:19\\)$",
+          "version": "2026-07-15 19:10:21",
+          "descriptionRegex": "\\(SW Jul 15 2026 19:10:21\\)$",
           "artifact": {
             "target": "application",
-            "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260818_1450.hex",
-            "sha256": "0C1061E0F77B4E3ADDBE2CAC9EC498AC71C8A7E9E2B0D0D5393667599F996479",
+            "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260715.hex",
+            "sha256": "71B4CEF1A6A78CC54AD71C36F600004D7A024BA0021258C9206209F2AC89F8DC",
             "format": "intelHex",
-            "addressBase": "0x08000000",
-            "flashNum": 0
+            "addressBase": "0x08040000",
+            "flashNum": 1
           },
           "installation": {
             "workflow": "firmware.application.standard",
@@ -111,9 +111,9 @@
             "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex",
             "sha256": "E1D396AF5E4A50B7B53FE465E7EEDECDDE74CFDCD76D4BCBB85C24EF0903BF41",
             "format": "intelHex",
-            "addressBase": "0x08000000",
+            "addressBase": "0x08040000",
             "default": true,
-            "flashNum": 0
+            "flashNum": 1
           },
           "installation": {
             "workflow": "firmware.application.standard",
@@ -128,8 +128,13 @@
           "enabled": true
         },
         {
-          "from": "sw-2026-07-16-09-24-19",
+          "from": "sw-2026-07-15-19-10-21",
           "to": "sw-2026-08-31-17-24-51",
+          "enabled": true
+        },
+        {
+          "from": "sw-2026-08-31-17-24-51",
+          "to": "sw-2026-07-15-19-10-21",
           "enabled": true
         }
       ]

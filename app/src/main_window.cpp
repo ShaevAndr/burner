@@ -452,7 +452,12 @@ QWidget* MainWindow::buildFirmwarePage()
     header->addWidget(buildWorkflowProgressPanel());
     layout->addLayout(header);
     layout->addWidget(buildFirmwareTablePanel(), 3);
+    layout->addWidget(buildLogsPanel(), 2);
+    return page;
+}
 
+QWidget* MainWindow::buildLogsPanel()
+{
     QSplitter* logs = new QSplitter(Qt::Horizontal);
     QWidget* operationPane = new QWidget;
     QVBoxLayout* operationLayout = new QVBoxLayout(operationPane);
@@ -460,10 +465,12 @@ QWidget* MainWindow::buildFirmwarePage()
     QLabel* operationLabel = new QLabel(QStringLiteral("Журнал операций"));
     operationLabel->setObjectName(QStringLiteral("subtitle"));
     operationLayout->addWidget(operationLabel);
-    mLog = new QPlainTextEdit;
-    mLog->setReadOnly(true);
-    mLog->setPlaceholderText(QStringLiteral("Операции обнаружения и прошивки"));
-    operationLayout->addWidget(mLog);
+    QPlainTextEdit* operationLog = new QPlainTextEdit;
+    operationLog->setReadOnly(true);
+    operationLog->setPlaceholderText(QStringLiteral("Операции обнаружения и прошивки"));
+    operationLog->setObjectName(QStringLiteral("operationLog"));
+    operationLayout->addWidget(operationLog);
+    mOperationLogs.append(operationLog);
     logs->addWidget(operationPane);
 
     QWidget* transportPane = new QWidget;
@@ -472,15 +479,15 @@ QWidget* MainWindow::buildFirmwarePage()
     QLabel* transportLabel = new QLabel(QStringLiteral("Сырой транспорт"));
     transportLabel->setObjectName(QStringLiteral("subtitle"));
     transportLayout->addWidget(transportLabel);
-    mTransportLog = new QPlainTextEdit;
-    mTransportLog->setReadOnly(true);
-    mTransportLog->setPlaceholderText(QStringLiteral("TX/RX ASCII packets"));
-    mTransportLog->setObjectName(QStringLiteral("transportLog"));
-    transportLayout->addWidget(mTransportLog);
+    QPlainTextEdit* transportLog = new QPlainTextEdit;
+    transportLog->setReadOnly(true);
+    transportLog->setPlaceholderText(QStringLiteral("TX/RX ASCII packets"));
+    transportLog->setObjectName(QStringLiteral("transportLog"));
+    transportLayout->addWidget(transportLog);
+    mTransportLogs.append(transportLog);
     logs->addWidget(transportPane);
     logs->setSizes({620, 420});
-    layout->addWidget(logs, 2);
-    return page;
+    return logs;
 }
 
 QWidget* MainWindow::buildBootloaderPage()
@@ -499,7 +506,8 @@ QWidget* MainWindow::buildBootloaderPage()
     layout->addWidget(h1);
     layout->addWidget(subtitle);
     layout->addWidget(buildWorkflowProgressPanel());
-    layout->addWidget(buildBootloaderTablePanel(), 1);
+    layout->addWidget(buildBootloaderTablePanel(), 3);
+    layout->addWidget(buildLogsPanel(), 2);
     return page;
 }
 
@@ -1340,18 +1348,25 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
 void MainWindow::appendLog(const QString& message)
 {
     appendFileLog(QStringLiteral("OPERATION"), message);
-    mLog->appendPlainText(QStringLiteral("[%1] %2")
-        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
+    const QString line = QStringLiteral("[%1] %2")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message);
+    for (QPlainTextEdit* log : mOperationLogs)
+    {
+        if (log)
+            log->appendPlainText(line);
+    }
 }
 
 void MainWindow::appendTransportLog(const QString& message)
 {
     appendFileLog(QStringLiteral("TRANSPORT"), message);
-    if (!mTransportLog)
-        return;
-
-    mTransportLog->appendPlainText(QStringLiteral("[%1] %2")
-        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
+    const QString line = QStringLiteral("[%1] %2")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message);
+    for (QPlainTextEdit* log : mTransportLogs)
+    {
+        if (log)
+            log->appendPlainText(line);
+    }
 }
 
 QString MainWindow::logFilePath() const

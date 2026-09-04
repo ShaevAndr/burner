@@ -53,6 +53,7 @@ private:
     QWidget* buildBootloaderPage();
     QWidget* buildProductionDatePage();
     QWidget* buildSerialNumberPage();
+    QWidget* buildLogsPanel();
     QWidget* buildDiscoveryPanel();
     QWidget* buildDiscoveryTablePanel();
     QWidget* buildFirmwareTablePanel();
@@ -147,8 +148,8 @@ private:
     QTableWidget* mBootloaderTable = nullptr;
     QTableWidget* mProductionDateTable = nullptr;
     QTableWidget* mSerialNumberTable = nullptr;
-    QPlainTextEdit* mLog = nullptr;
-    QPlainTextEdit* mTransportLog = nullptr;
+    QVector<QPlainTextEdit*> mOperationLogs;
+    QVector<QPlainTextEdit*> mTransportLogs;
     bool mDiscoveryBusy = false;
 };
 

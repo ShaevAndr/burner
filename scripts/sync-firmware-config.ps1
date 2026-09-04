@@ -20,6 +20,14 @@ $supportedExtensions = @(".hex", ".bin")
 $monthPattern = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 $buildStampPattern = "(?<date>(?:$monthPattern)\s{1,2}\d{1,2}\s\d{4})[\x00-\x20]{0,32}(?<time>\d{2}:\d{2}:\d{2})"
 $culture = [Globalization.CultureInfo]::GetCultureInfo("en-US")
+$defaultFlashNum = 1
+$bootloaderAddressBase = [uint64]0x08000000
+$applicationAddressBase = [uint64]0x08040000
+
+function Format-HexAddress {
+    param([Parameter(Mandatory = $true)][uint64]$Address)
+    return "0x" + $Address.ToString("X8", [Globalization.CultureInfo]::InvariantCulture)
+}
 
 function Read-IntelHexData {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -74,6 +82,71 @@ function Read-IntelHexData {
         throw "Intel HEX file '$Path' has no EOF record"
     }
     return $data.ToArray()
+}
+
+function Get-IntelHexAddressRange {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    [uint64]$upperAddress = 0
+    [uint64]$minimumAddress = [uint64]::MaxValue
+    [uint64]$maximumAddress = 0
+    $hasData = $false
+    $lineNumber = 0
+    foreach ($rawLine in [IO.File]::ReadLines($Path, [Text.Encoding]::ASCII)) {
+        ++$lineNumber
+        $line = $rawLine.Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $byteCount = [Convert]::ToInt32($line.Substring(1, 2), 16)
+        $recordOffset = [Convert]::ToInt32($line.Substring(3, 4), 16)
+        $recordType = [Convert]::ToInt32($line.Substring(7, 2), 16)
+        if ($recordType -eq 0) {
+            if ($byteCount -eq 0) {
+                continue
+            }
+            [uint64]$recordStart = $upperAddress + [uint64]$recordOffset
+            [uint64]$recordEnd = $recordStart + [uint64]$byteCount - 1
+            if ($recordStart -lt $minimumAddress) {
+                $minimumAddress = $recordStart
+            }
+            if ($recordEnd -gt $maximumAddress) {
+                $maximumAddress = $recordEnd
+            }
+            $hasData = $true
+        } elseif ($recordType -eq 2) {
+            $segment = [Convert]::ToInt32($line.Substring(9, 4), 16)
+            $upperAddress = [uint64]$segment * 16
+        } elseif ($recordType -eq 4) {
+            $linear = [Convert]::ToInt32($line.Substring(9, 4), 16)
+            $upperAddress = [uint64]$linear * 65536
+        }
+    }
+
+    if (-not $hasData) {
+        throw "Intel HEX file '$Path' has no data records"
+    }
+    return [pscustomobject]@{
+        Start = $minimumAddress
+        End = $maximumAddress
+    }
+}
+
+function Assert-FirmwareAddressBase {
+    param(
+        [Parameter(Mandatory = $true)][IO.FileInfo]$File,
+        [Parameter(Mandatory = $true)][uint64]$ExpectedAddress,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    if ($File.Extension -ine ".hex") {
+        return
+    }
+    $range = Get-IntelHexAddressRange -Path $File.FullName
+    if ($range.Start -ne $ExpectedAddress) {
+        throw "Firmware '$($File.FullName)' target '$Target' starts at $(Format-HexAddress $range.Start); expected $(Format-HexAddress $ExpectedAddress)"
+    }
 }
 
 function Get-FirmwareBuildStamp {
@@ -265,6 +338,7 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
     foreach ($file in $firmwareFiles) {
         $assignedFiles[$file.FullName.ToLowerInvariant()] = $true
         $stamp = Get-FirmwareBuildStamp -File $file
+        Assert-FirmwareAddressBase -File $file -ExpectedAddress $applicationAddressBase -Target "application"
         $firmwareId = "sw-" + $stamp.DateTime.ToString("yyyy-MM-dd-HH-mm-ss", [Globalization.CultureInfo]::InvariantCulture)
         if ($seenFirmwareIds.ContainsKey($firmwareId)) {
             throw "Files '$($seenFirmwareIds[$firmwareId])' and '$($file.FullName)' contain the same firmware version '$firmwareId'"
@@ -282,6 +356,7 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         Set-JsonProperty -Object $version -Name "id" -Value $firmwareId
         Set-JsonProperty -Object $version -Name "version" -Value $versionText
         Set-JsonProperty -Object $version -Name "descriptionRegex" -Value "\(SW $($stamp.DateText) $($stamp.TimeText)\)$"
+        Set-JsonProperty -Object $version.artifact -Name "target" -Value "application"
         Set-JsonProperty -Object $version.artifact -Name "relativePath" -Value "flash/$relativeDirectory/$($file.Name)"
         Set-JsonProperty -Object $version.artifact -Name "sha256" -Value (
             (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
@@ -289,6 +364,12 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         Set-JsonProperty -Object $version.artifact -Name "format" -Value $(
             if ($file.Extension -ieq ".hex") { "intelHex" } else { "binary" }
         )
+        Set-JsonProperty -Object $version.artifact -Name "addressBase" -Value (
+            Format-HexAddress $applicationAddressBase)
+        Set-JsonProperty -Object $version.artifact -Name "flashNum" -Value $defaultFlashNum
+        if ($version.artifact.PSObject.Properties["offset"]) {
+            $version.artifact.PSObject.Properties.Remove("offset")
+        }
         $scanned.Add([pscustomobject]@{
             DateTime = $stamp.DateTime
             Version = $version
@@ -379,6 +460,7 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
     foreach ($file in $bootloaderFiles) {
         $assignedFiles[$file.FullName.ToLowerInvariant()] = $true
         $stamp = Get-FirmwareBuildStamp -File $file
+        Assert-FirmwareAddressBase -File $file -ExpectedAddress $bootloaderAddressBase -Target "bootloader"
         $versionText = $stamp.DateTime.ToString(
             "yyyy-MM-dd HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
         if ($seenBootloaderVersions.ContainsKey($versionText)) {
@@ -398,7 +480,7 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
                 sha256 = ""
                 format = ""
                 addressBase = "0x08000000"
-                flashNum = 0
+                flashNum = 1
                 flashStrategy = "page-flash"
             }
         }
@@ -413,6 +495,12 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         Set-JsonProperty -Object $artifact -Name "format" -Value $(
             if ($file.Extension -ieq ".hex") { "intelHex" } else { "binary" }
         )
+        Set-JsonProperty -Object $artifact -Name "addressBase" -Value (
+            Format-HexAddress $bootloaderAddressBase)
+        Set-JsonProperty -Object $artifact -Name "flashNum" -Value $defaultFlashNum
+        if ($artifact.PSObject.Properties["offset"]) {
+            $artifact.PSObject.Properties.Remove("offset")
+        }
         $scannedBootloaders.Add([pscustomobject]@{
             DateTime = $stamp.DateTime
             Artifact = $artifact

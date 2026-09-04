@@ -4,7 +4,7 @@
     <file>config/actions.json</file>
     <file>config/device-catalog.json</file>
     <file>config/workflows.json</file>
-    <file>flash/boc-v12/BOCv12_ADCVibr_Digital20260818_1450.hex</file>
+    <file>flash/boc-v12/BOCv12_ADCVibr_Digital20260715.hex</file>
     <file>flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex</file>
     <file>flash/boc-v12/bootloader/BOCv12_GD32F470Z_BootLoader20260820_150326.hex</file>
     <file>flash/boc-v6/BOCv6_ADCVibr_Digital20260721_1228.hex</file>
