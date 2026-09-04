@@ -7,6 +7,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -27,6 +29,13 @@
 class FakeDeviceTransport : public IDeviceTransport
 {
 public:
+    struct ParallelCallState
+    {
+        QMutex mutex;
+        int activeCalls = 0;
+        int maximumActiveCalls = 0;
+    };
+
     struct WriteCall
     {
         quint16 index = 0;
@@ -71,8 +80,20 @@ public:
 
     bool writeRegisterNoReply(const DeviceIdentity&, quint16 index, qint32 value, QString*, QString* rawResponse = nullptr) override
     {
+        if (parallelCallState)
+        {
+            QMutexLocker locker(&parallelCallState->mutex);
+            ++parallelCallState->activeCalls;
+            parallelCallState->maximumActiveCalls = qMax(
+                parallelCallState->maximumActiveCalls, parallelCallState->activeCalls);
+        }
         if (noReplyWriteDelayMs > 0)
             QThread::msleep(static_cast<unsigned long>(noReplyWriteDelayMs));
+        if (parallelCallState)
+        {
+            QMutexLocker locker(&parallelCallState->mutex);
+            --parallelCallState->activeCalls;
+        }
         noReplyWrites.append(WriteCall{index, value});
         if (rawResponse)
             *rawResponse = QStringLiteral("TX :000000E20000000000000000\\r\nRX <not expected>");
@@ -172,6 +193,7 @@ public:
     bool failWrites = false;
     bool waitForIdentityResult = true;
     int noReplyWriteDelayMs = 0;
+    std::shared_ptr<ParallelCallState> parallelCallState;
     QHash<int, QString> writeErrorsByAttempt;
 };
 
@@ -315,6 +337,7 @@ private slots:
     void workflowRestoresApplicationAfterProductionDateFailure();
     void workflowSkipsProtectedSettingsWithoutFactoryKey();
     void workflowWorkerRunsDevicesInParallel();
+    void workflowWorkerLimitsParallelDevicesToFive();
     void catalogDetectsDeviceState();
     void workflowWritesSerialNumberRegisterInBootloader();
     void applicationLoadActionIsAvailableForBootloader();
@@ -396,17 +419,17 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     DeviceIdentity device;
     device.type = 0x0A03;
     device.version = 0x0001;
-    device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Jul 16 2026 09:24:19)");
+    device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Jul 15 2026 19:10:21)");
 
     device = catalog.enrich(device);
     QVERIFY(device.known);
     QCOMPARE(device.name, QStringLiteral("БОЦ-В-12"));
     QCOMPARE(device.descriptionKeywords, QStringList{QStringLiteral("БОЦ-В-12")});
-    QCOMPARE(device.currentFirmwareId, QStringLiteral("sw-2026-07-16-09-24-19"));
+    QCOMPARE(device.currentFirmwareId, QStringLiteral("sw-2026-07-15-19-10-21"));
     QCOMPARE(device.productionDateRegister, 9);
     QCOMPARE(device.serialNumberRegister, 10);
     QCOMPARE(device.firmwareVersions.size(), 3);
-    QCOMPARE(device.firmwareTransitions.size(), 2);
+    QCOMPARE(device.firmwareTransitions.size(), 3);
     QVERIFY(!device.allowUnknownCurrentFirmware);
     QVERIFY2(device.capabilities.contains(QStringLiteral("flash.bootloader.write")),
         "A recognized model with a bootloader artifact must receive the flash action automatically");
@@ -422,7 +445,7 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     DeviceIdentity bootloader = device;
     bootloader.type = 0x1001;
     bootloader.version = 0x0000;
-    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) (Boot) 1970 I Зав.№902 (SW Jul 16 2026 09:24:19)");
+    bootloader.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) (Boot) 1970 I Зав.№902 (SW Jul 15 2026 19:10:21)");
     bootloader = catalog.enrich(bootloader);
     QVERIFY2(bootloader.known, "Bootloader identity should resolve to the same catalog entry");
     QCOMPARE(bootloader.catalogId, QStringLiteral("boc.v12"));
@@ -445,7 +468,7 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     const FirmwareArtifact defaultApplication = device.firmwareForTarget(QStringLiteral("application"));
     QVERIFY(defaultApplication.isDefault);
     QCOMPARE(defaultApplication.relativePath, QStringLiteral("flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex"));
-    QCOMPARE(defaultApplication.flashNum, 0);
+    QCOMPARE(defaultApplication.flashNum, 1);
 
     const FirmwareArtifact bootloaderArtifact = device.firmwareForTarget(QStringLiteral("bootloader"));
     QCOMPARE(bootloaderArtifact.relativePath,
@@ -455,17 +478,17 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     QCOMPARE(bootloaderArtifact.flashStrategy, QStringLiteral("page-flash"));
     QCOMPARE(bootloaderArtifact.allowedFromFirmwareIds, QStringList({
         QStringLiteral("sw-2026-07-08-12-51-18"),
-        QStringLiteral("sw-2026-07-16-09-24-19"),
+        QStringLiteral("sw-2026-07-15-19-10-21"),
         QStringLiteral("sw-2026-08-31-17-24-51")
     }));
 
     const QString latestFirmwareId = QStringLiteral("sw-2026-08-31-17-24-51");
     QVERIFY(device.isFirmwareTargetAllowed(latestFirmwareId));
-    QVERIFY(!device.isFirmwareTargetAllowed(QStringLiteral("sw-2026-07-16-09-24-19")));
+    QVERIFY(!device.isFirmwareTargetAllowed(QStringLiteral("sw-2026-07-15-19-10-21")));
 
     DeviceIdentity july8 = device;
     july8.description = QStringLiteral(
-        "Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Jul 08 2026 12:51:18)");
+        "Блок обработки цифровой (БОЦ-В-12) 1970 I Зав.№902 (SW Jul 8 2026 12:51:18)");
     july8 = catalog.enrich(july8);
     QCOMPARE(july8.currentFirmwareId, QStringLiteral("sw-2026-07-08-12-51-18"));
     QVERIFY(july8.isFirmwareTargetAllowed(latestFirmwareId));
@@ -951,6 +974,54 @@ void DeviceWorkbenchTest::workflowWorkerRunsDevicesInParallel()
     QVERIFY(finishedSpy.first().at(0).toBool());
     QCOMPARE(firstTransport->noReplyWrites.size(), 1);
     QCOMPARE(secondTransport->noReplyWrites.size(), 1);
+}
+
+void DeviceWorkbenchTest::workflowWorkerLimitsParallelDevicesToFive()
+{
+    WorkflowRepository workflows;
+    QString error;
+    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &error),
+        qPrintable(error));
+
+    const auto parallelState = std::make_shared<FakeDeviceTransport::ParallelCallState>();
+    QVector<std::shared_ptr<DeviceBase>> devices;
+    QVector<std::shared_ptr<FakeDeviceTransport>> transports;
+    for (int index = 0; index < 8; ++index)
+    {
+        DeviceIdentity identity;
+        identity.type = 0x1000;
+        identity.applicationType = 0x0A02;
+        identity.applicationVersion = 1;
+        identity.state = QStringLiteral("bootloader");
+        identity.endpoint = QStringLiteral("192.168.1.%1:2001").arg(100 + index);
+        identity.uuid = QStringLiteral("11111111-1111-1111-1111-%1")
+            .arg(index, 12, 10, QLatin1Char('0'));
+
+        auto transport = std::make_shared<FakeDeviceTransport>();
+        transport->noReplyWriteDelayMs = 300;
+        transport->parallelCallState = parallelState;
+        transport->discoveredIdentity = identity;
+        transport->discoveredIdentity.type = identity.applicationType;
+        transport->discoveredIdentity.version = identity.applicationVersion;
+        transport->discoveredIdentity.state = QStringLiteral("application");
+
+        DeviceFactory factory(transport);
+        devices.append(factory.create(identity));
+        transports.append(transport);
+    }
+
+    ActionSpec action;
+    action.id = QStringLiteral("device.application.load");
+    WorkflowWorker worker(&workflows, action, devices, {});
+    QSignalSpy finishedSpy(&worker, &WorkflowWorker::finished);
+
+    worker.run();
+
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(finishedSpy.first().at(0).toBool());
+    QCOMPARE(parallelState->maximumActiveCalls, WorkflowWorker::MaxParallelDevices);
+    for (const std::shared_ptr<FakeDeviceTransport>& transport : transports)
+        QCOMPARE(transport->noReplyWrites.size(), 1);
 }
 
 void DeviceWorkbenchTest::catalogDetectsDeviceState()

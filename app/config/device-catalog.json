@@ -71,7 +71,7 @@
           "flashStrategy": "page-flash",
           "allowedFromFirmwareIds": [
             "sw-2026-07-08-12-51-18",
-            "sw-2026-07-16-09-24-19",
+            "sw-2026-07-15-19-10-21",
             "sw-2026-08-31-17-24-51"
           ]
         }
@@ -81,13 +81,13 @@
           "id": "sw-2026-07-08-12-51-18",
           "title": "БОЦ-В-12 ADC Vibr Digital",
           "version": "2026-07-08 12:51:18",
-          "descriptionRegex": "\\(SW Jul  8 2026 12:51:18\\)$"
+          "descriptionRegex": "\\(SW Jul\\s+0?8 2026 12:51:18\\)$"
         },
         {
           "id": "sw-2026-07-15-19-10-21",
           "title": "БОЦ-В-12 ADC Vibr Digital",
           "version": "2026-07-15 19:10:21",
-          "descriptionRegex": "\\(SW Jul 15 2026 19:10:21\\)$",
+          "descriptionRegex": "\\(SW Jul\\s+15 2026 19:10:21\\)$",
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260715.hex",
@@ -105,7 +105,7 @@
           "id": "sw-2026-08-31-17-24-51",
           "title": "БОЦ-В-12 ADC Vibr Digital",
           "version": "2026-08-31 17:24:51",
-          "descriptionRegex": "\\(SW Aug 31 2026 17:24:51\\)$",
+          "descriptionRegex": "\\(SW Aug\\s+31 2026 17:24:51\\)$",
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex",
@@ -131,11 +131,6 @@
           "from": "sw-2026-07-15-19-10-21",
           "to": "sw-2026-08-31-17-24-51",
           "enabled": true
-        },
-        {
-          "from": "sw-2026-08-31-17-24-51",
-          "to": "sw-2026-07-15-19-10-21",
-          "enabled": true
         }
       ]
     },
@@ -146,7 +141,7 @@
           "id": "sw-2026-07-21-11-59-00",
           "title": "БОЦ-В-6 ADC Vibr Digital",
           "version": "2026-07-21 11:59:00",
-          "descriptionRegex": "\\(SW Jul 21 2026 11:59:00\\)$",
+          "descriptionRegex": "\\(SW Jul\\s+21 2026 11:59:00\\)$",
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260721_1228.hex",
@@ -164,7 +159,7 @@
           "id": "sw-2026-08-31-10-01-24",
           "title": "БОЦ-В-6 ADC Vibr Digital",
           "version": "2026-08-31 10:01:24",
-          "descriptionRegex": "\\(SW Aug 31 2026 10:01:24\\)$",
+          "descriptionRegex": "\\(SW Aug\\s+31 2026 10:01:24\\)$",
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260831_1007.hex",

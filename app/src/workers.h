@@ -31,6 +31,8 @@ class WorkflowWorker : public QObject
 {
     Q_OBJECT
 public:
+    static constexpr int MaxParallelDevices = 5;
+
     WorkflowWorker(WorkflowRepository* workflows,
         ActionSpec action,
         QVector<std::shared_ptr<DeviceBase>> devices,

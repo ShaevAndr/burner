@@ -353,9 +353,13 @@ foreach ($catalog in @($catalogRoot.firmwareCatalogs)) {
         }
 
         $versionText = $stamp.DateTime.ToString("yyyy-MM-dd HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+        $buildMonth = $stamp.DateTime.ToString("MMM", $culture)
+        $buildDay = $stamp.DateTime.Day
+        $buildDayPattern = if ($buildDay -lt 10) { "0?$buildDay" } else { [string]$buildDay }
+        $buildYear = $stamp.DateTime.Year
         Set-JsonProperty -Object $version -Name "id" -Value $firmwareId
         Set-JsonProperty -Object $version -Name "version" -Value $versionText
-        Set-JsonProperty -Object $version -Name "descriptionRegex" -Value "\(SW $($stamp.DateText) $($stamp.TimeText)\)$"
+        Set-JsonProperty -Object $version -Name "descriptionRegex" -Value "\(SW $buildMonth\s+$buildDayPattern $buildYear $($stamp.TimeText)\)$"
         Set-JsonProperty -Object $version.artifact -Name "target" -Value "application"
         Set-JsonProperty -Object $version.artifact -Name "relativePath" -Value "flash/$relativeDirectory/$($file.Name)"
         Set-JsonProperty -Object $version.artifact -Name "sha256" -Value (
