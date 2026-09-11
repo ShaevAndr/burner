@@ -4,6 +4,7 @@
 #include "workers.h"
 
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
@@ -288,6 +289,19 @@ MainWindow::~MainWindow()
     }
 }
 
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (mActionBusy)
+    {
+        event->ignore();
+        QMessageBox::information(this,
+            QStringLiteral("Операция выполняется"),
+            QStringLiteral("Дождитесь завершения текущей операции с устройствами."));
+        return;
+    }
+    QMainWindow::closeEvent(event);
+}
+
 void MainWindow::buildUi()
 {
     resize(1280, 760);
@@ -344,7 +358,9 @@ void MainWindow::buildUi()
         QLabel#subtitle { color: #667584; font-size: 13px; }
         QPushButton { min-height: 34px; border: 1px solid #d8e0e5; border-radius: 7px; padding: 0 12px; background: white; color: #25313f; }
         QPushButton#primary, QPushButton#nav:checked { background: #2563eb; border-color: #2563eb; color: white; }
+        QPushButton#primary:disabled { background: #e5e9ed; border-color: #c8d0d8; color: #8a98a6; }
         QPushButton#nav { background: #17212b; border-color: #334150; color: #d9e1e8; text-align: left; }
+        QPushButton#nav:disabled { background: #202b36; border-color: #2b3743; color: #687785; }
         QPushButton#tablePing { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; background: #eff6ff; border: 1px solid #2563eb; color: #1d4ed8; }
         QPushButton#tablePing:hover { background: #dbeafe; }
         QPushButton#tableFlash { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; background: #2563eb; border: 1px solid #2563eb; color: white; }
@@ -452,7 +468,12 @@ QWidget* MainWindow::buildFirmwarePage()
     header->addWidget(buildWorkflowProgressPanel());
     layout->addLayout(header);
     layout->addWidget(buildFirmwareTablePanel(), 3);
+    layout->addWidget(buildLogsPanel(), 2);
+    return page;
+}
 
+QWidget* MainWindow::buildLogsPanel()
+{
     QSplitter* logs = new QSplitter(Qt::Horizontal);
     QWidget* operationPane = new QWidget;
     QVBoxLayout* operationLayout = new QVBoxLayout(operationPane);
@@ -460,10 +481,12 @@ QWidget* MainWindow::buildFirmwarePage()
     QLabel* operationLabel = new QLabel(QStringLiteral("Журнал операций"));
     operationLabel->setObjectName(QStringLiteral("subtitle"));
     operationLayout->addWidget(operationLabel);
-    mLog = new QPlainTextEdit;
-    mLog->setReadOnly(true);
-    mLog->setPlaceholderText(QStringLiteral("Операции обнаружения и прошивки"));
-    operationLayout->addWidget(mLog);
+    QPlainTextEdit* operationLog = new QPlainTextEdit;
+    operationLog->setReadOnly(true);
+    operationLog->setPlaceholderText(QStringLiteral("Операции обнаружения и прошивки"));
+    operationLog->setObjectName(QStringLiteral("operationLog"));
+    operationLayout->addWidget(operationLog);
+    mOperationLogs.append(operationLog);
     logs->addWidget(operationPane);
 
     QWidget* transportPane = new QWidget;
@@ -472,15 +495,15 @@ QWidget* MainWindow::buildFirmwarePage()
     QLabel* transportLabel = new QLabel(QStringLiteral("Сырой транспорт"));
     transportLabel->setObjectName(QStringLiteral("subtitle"));
     transportLayout->addWidget(transportLabel);
-    mTransportLog = new QPlainTextEdit;
-    mTransportLog->setReadOnly(true);
-    mTransportLog->setPlaceholderText(QStringLiteral("TX/RX ASCII packets"));
-    mTransportLog->setObjectName(QStringLiteral("transportLog"));
-    transportLayout->addWidget(mTransportLog);
+    QPlainTextEdit* transportLog = new QPlainTextEdit;
+    transportLog->setReadOnly(true);
+    transportLog->setPlaceholderText(QStringLiteral("TX/RX ASCII packets"));
+    transportLog->setObjectName(QStringLiteral("transportLog"));
+    transportLayout->addWidget(transportLog);
+    mTransportLogs.append(transportLog);
     logs->addWidget(transportPane);
     logs->setSizes({620, 420});
-    layout->addWidget(logs, 2);
-    return page;
+    return logs;
 }
 
 QWidget* MainWindow::buildBootloaderPage()
@@ -499,7 +522,8 @@ QWidget* MainWindow::buildBootloaderPage()
     layout->addWidget(h1);
     layout->addWidget(subtitle);
     layout->addWidget(buildWorkflowProgressPanel());
-    layout->addWidget(buildBootloaderTablePanel(), 1);
+    layout->addWidget(buildBootloaderTablePanel(), 3);
+    layout->addWidget(buildLogsPanel(), 2);
     return page;
 }
 
@@ -1127,11 +1151,17 @@ void MainWindow::showPage(int pageIndex)
 
 void MainWindow::updateNavigationActions()
 {
+    const bool navigationEnabled = !mActionBusy;
+    if (mDiscoveryTabButton)
+        mDiscoveryTabButton->setEnabled(navigationEnabled);
+    if (mFirmwareTabButton)
+        mFirmwareTabButton->setEnabled(navigationEnabled);
+
     const QVector<std::shared_ptr<DeviceBase>> bootloaderDevices = devicesForAction(
         QStringLiteral("flash.bootloader.write"));
     if (mBootloaderTabButton)
     {
-        mBootloaderTabButton->setEnabled(true);
+        mBootloaderTabButton->setEnabled(navigationEnabled);
         mBootloaderTabButton->setToolTip(bootloaderDevices.isEmpty()
             ? QStringLiteral("Открыть прошивку bootloader: совместимые устройства пока не найдены")
             : QStringLiteral("Открыть прошивку bootloader для %1 совместимых устройств")
@@ -1145,8 +1175,8 @@ void MainWindow::updateNavigationActions()
         QStringLiteral("device.productionDate.update"));
     const QVector<std::shared_ptr<DeviceBase>> serialDevices = devicesForAction(
         QStringLiteral("device.serialNumber.update"));
-    mProductionDateButton->setEnabled(true);
-    mSerialNumberButton->setEnabled(true);
+    mProductionDateButton->setEnabled(navigationEnabled);
+    mSerialNumberButton->setEnabled(navigationEnabled);
     mProductionDateButton->setToolTip(dateDevices.isEmpty()
         ? QStringLiteral("Открыть таблицу смены даты: совместимые устройства пока не найдены")
         : QStringLiteral("Открыть таблицу смены даты для %1 совместимых устройств")
@@ -1340,18 +1370,25 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
 void MainWindow::appendLog(const QString& message)
 {
     appendFileLog(QStringLiteral("OPERATION"), message);
-    mLog->appendPlainText(QStringLiteral("[%1] %2")
-        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
+    const QString line = QStringLiteral("[%1] %2")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message);
+    for (QPlainTextEdit* log : mOperationLogs)
+    {
+        if (log)
+            log->appendPlainText(line);
+    }
 }
 
 void MainWindow::appendTransportLog(const QString& message)
 {
     appendFileLog(QStringLiteral("TRANSPORT"), message);
-    if (!mTransportLog)
-        return;
-
-    mTransportLog->appendPlainText(QStringLiteral("[%1] %2")
-        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
+    const QString line = QStringLiteral("[%1] %2")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message);
+    for (QPlainTextEdit* log : mTransportLogs)
+    {
+        if (log)
+            log->appendPlainText(line);
+    }
 }
 
 QString MainWindow::logFilePath() const
@@ -2267,8 +2304,10 @@ void MainWindow::rebuildBulkMenu()
     else if (!hasCommonFirmware)
         mBulkFlashButton->setToolTip(QStringLiteral("Для выбранных устройств нет общей подходящей прошивки"));
     else
-        mBulkFlashButton->setToolTip(QStringLiteral("Выбрать общую прошивку для отмеченных устройств"));
-    mBulkFlashButton->setEnabled(hasCommonFirmware && !hasBusyDevice && !mWorkflowThread);
+        mBulkFlashButton->setToolTip(QStringLiteral(
+            "Выбрать общую прошивку для отмеченных устройств; одновременно прошиваются не более 5"));
+    mBulkFlashButton->setEnabled(
+        hasCommonFirmware && !hasBusyDevice && !mWorkflowThread && !mActionBusy);
 }
 
 void MainWindow::rebuildProductionDateBulkAction()
@@ -2356,25 +2395,47 @@ void MainWindow::rebuildBootloaderBulkAction()
 
 void MainWindow::setActionBusy(bool busy)
 {
+    mActionBusy = busy;
     if (mBulkFlashButton)
         mBulkFlashButton->setEnabled(false);
     if (mBulkBootloaderButton)
         mBulkBootloaderButton->setEnabled(false);
     if (mBulkProductionDateButton)
         mBulkProductionDateButton->setEnabled(false);
+
+    const QVector<QWidget*> interactionWidgets = {
+        mLineMode,
+        mNetworkInterface,
+        mUdpProtocol,
+        mSerialPort,
+        mRs485Protocol,
+        mAddressStart,
+        mAddressEnd,
+        mDiscoveryTable,
+        mFirmwareTable,
+        mBootloaderTable,
+        mProductionDateTable,
+        mSerialNumberTable
+    };
+    for (QWidget* widget : interactionWidgets)
+    {
+        if (widget)
+            widget->setEnabled(!busy);
+    }
+
     for (int row = 0; row < mDevices.size(); ++row)
         updateDeviceRow(row, mDevices.at(row));
     if (!busy)
         updateBulkMenu();
     updateNavigationActions();
     if (mSearchButton)
-        mSearchButton->setEnabled(!busy);
+        mSearchButton->setEnabled(!busy && !mDiscoveryBusy);
 }
 
 void MainWindow::setBusy(bool busy)
 {
     mDiscoveryBusy = busy;
-    mSearchButton->setEnabled(!busy);
+    mSearchButton->setEnabled(!busy && !mActionBusy);
     mSearchButton->setText(busy ? QStringLiteral("Идет поиск...") :
         (mLineMode->currentData().toString() == QStringLiteral("rs485") ? QStringLiteral("Поиск RS-485") : QStringLiteral("Broadcast поиск")));
     updateNavigationActions();

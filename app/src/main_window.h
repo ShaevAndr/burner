@@ -19,6 +19,7 @@
 class QThread;
 class QStackedWidget;
 class QLabel;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow
 {
@@ -26,6 +27,9 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(ServiceContainer* services, QWidget* parent = nullptr);
     ~MainWindow() override;
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void startDiscovery();
@@ -53,6 +57,7 @@ private:
     QWidget* buildBootloaderPage();
     QWidget* buildProductionDatePage();
     QWidget* buildSerialNumberPage();
+    QWidget* buildLogsPanel();
     QWidget* buildDiscoveryPanel();
     QWidget* buildDiscoveryTablePanel();
     QWidget* buildFirmwareTablePanel();
@@ -147,9 +152,10 @@ private:
     QTableWidget* mBootloaderTable = nullptr;
     QTableWidget* mProductionDateTable = nullptr;
     QTableWidget* mSerialNumberTable = nullptr;
-    QPlainTextEdit* mLog = nullptr;
-    QPlainTextEdit* mTransportLog = nullptr;
+    QVector<QPlainTextEdit*> mOperationLogs;
+    QVector<QPlainTextEdit*> mTransportLogs;
     bool mDiscoveryBusy = false;
+    bool mActionBusy = false;
 };
 
 #endif // DEVICE_WORKBENCH_MAIN_WINDOW_H

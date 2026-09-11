@@ -40,9 +40,12 @@
 .\scripts\build-releases.ps1 -Edition external
 ```
 
-Скрипт синхронизирует каталог прошивок, создаёт `embedded_resources.qrc`, запускает
-`qmake`, `mingw32-make` и `windeployqt`. JSON-конфигурация и образы прошивок
-компилируются внутрь `.exe`; каталоги `config` и `flash` в релиз не копируются.
+Перед сборкой при необходимости отдельно запустите
+`scripts/sync-firmware-config.ps1`, затем проверьте или отредактируйте JSON.
+Скрипт сборки не меняет конфигурацию: он создаёт `embedded_resources.qrc`, запускает
+`qmake`, `mingw32-make` и `windeployqt`. Текущая JSON-конфигурация и образы
+прошивок компилируются внутрь `.exe`; каталоги `config` и `flash` в релиз не
+копируются.
 Обычный `device-workbench.pro` оставлен как совместимый псевдоним внутренней
 редакции.
 

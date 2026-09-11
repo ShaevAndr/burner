@@ -17,5 +17,15 @@ ZIP-файлы с пометкой `Переносимая` для переда�
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-releases.ps1 -Clean
 ```
 
+Сборка использует текущие файлы из `app/config` и не изменяет их. Если нужно
+сначала обновить каталог по файлам прошивок, запустите отдельно:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-firmware-config.ps1
+```
+
+После этого конфигурацию можно проверить или отредактировать вручную и только
+затем запускать сборку.
+
 Параметр `-Clean` очищает только временный каталог компиляции и не затрагивает
 пользовательские журналы.

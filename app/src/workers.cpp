@@ -8,6 +8,7 @@
 #include <QMutexLocker>
 #include <QTimer>
 
+#include <atomic>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -165,7 +166,8 @@ void WorkflowWorker::run()
     std::vector<DeviceRunResult> results(static_cast<size_t>(deviceCount));
     std::vector<int> deviceProgress(static_cast<size_t>(deviceCount), 0);
     std::vector<std::thread> threads;
-    threads.reserve(static_cast<size_t>(activeDeviceCount));
+    const int workerCount = qMin(activeDeviceCount, MaxParallelDevices);
+    threads.reserve(static_cast<size_t>(workerCount));
     QMutex progressMutex;
     QMutex signalMutex;
 
@@ -197,14 +199,27 @@ void WorkflowWorker::run()
         emit progressChanged(qBound(0, aggregate, kRunningProgressMaximum));
     };
 
-    for (int deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex)
+    if (activeDeviceCount > MaxParallelDevices)
     {
-        const std::shared_ptr<DeviceBase> device = mDevices.at(deviceIndex);
-        if (!device)
-            continue;
+        emitLog(QStringLiteral(
+            "Parallel operation limit is %1 device(s); %2 device(s) will wait in queue")
+            .arg(MaxParallelDevices)
+            .arg(activeDeviceCount - MaxParallelDevices));
+    }
 
-        threads.emplace_back([this, device, deviceIndex, &results,
-                                 &emitLog, &emitTransportLog, &emitStage, &updateProgress]() {
+    std::atomic<int> nextDeviceIndex{0};
+    const auto runNextDevices = [this, deviceCount, &nextDeviceIndex, &results,
+                                    &emitLog, &emitTransportLog, &emitStage, &updateProgress]() {
+        while (true)
+        {
+            const int deviceIndex = nextDeviceIndex.fetch_add(1);
+            if (deviceIndex >= deviceCount)
+                return;
+
+            const std::shared_ptr<DeviceBase> device = mDevices.at(deviceIndex);
+            if (!device)
+                continue;
+
             DeviceRunResult& result = results.at(static_cast<size_t>(deviceIndex));
             WorkflowRunner runner(mWorkflows);
             connect(&runner, &WorkflowRunner::logMessage, &runner,
@@ -265,7 +280,12 @@ void WorkflowWorker::run()
                 emitTransportLog(QStringLiteral("[%1] %2")
                     .arg(device->identity().typeHex(), rawResponse));
             updateProgress(deviceIndex, 100);
-        });
+        }
+    };
+
+    for (int workerIndex = 0; workerIndex < workerCount; ++workerIndex)
+    {
+        threads.emplace_back(runNextDevices);
     }
 
     for (std::thread& thread : threads)

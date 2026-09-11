@@ -10,7 +10,7 @@ namespace {
 constexpr UINT WM_OPERATION_COMPLETE = WM_APP + 1;
 
 enum ControlId {
-    IdBuild = 1001, IdInstaller, IdStatus, IdLog
+    IdConfig = 1001, IdBuild, IdInstaller, IdStatus, IdLog
 };
 
 struct Options {
@@ -20,6 +20,7 @@ struct Options {
 
 struct Gui {
     HWND window = nullptr;
+    HWND config = nullptr;
     HWND build = nullptr;
     HWND installer = nullptr;
     HWND status = nullptr;
@@ -64,15 +65,17 @@ void help()
 {
     print(L"обнови-БОЦ: перевыпуск приложений и установщиков");
     print(L"");
-    print(L"Запустите obnovi-boc-cli.exe без параметров, чтобы открыть окно с двумя кнопками.");
+    print(L"Запустите obnovi-boc-cli.exe без параметров, чтобы открыть окно управления сборкой.");
     print(L"");
     print(L"Использование:");
+    print(L"  obnovi-boc-cli config [--root ПУТЬ]");
     print(L"  obnovi-boc-cli build [--root ПУТЬ]");
     print(L"  obnovi-boc-cli installer [--root ПУТЬ]");
     print(L"");
     print(L"Команды:");
-    print(L"  build       Чисто пересобрать обе редакции приложения.");
-    print(L"  installer   Пересобрать приложения, установщики и portable ZIP.");
+    print(L"  config      Обновить конфигурацию по файлам прошивок.");
+    print(L"  build       Чисто пересобрать обе редакции из готовой конфигурации.");
+    print(L"  installer   Пересобрать приложения из готовой конфигурации, установщики и portable ZIP.");
     print(L"");
     print(L"Параметры: --root ПУТЬ, --dry-run, -h, --help");
 }
@@ -182,7 +185,9 @@ std::vector<std::wstring> powershell(const std::wstring& command, const Options&
     std::vector<std::wstring> result = {
         L"powershell.exe", L"-NoProfile", L"-ExecutionPolicy", L"Bypass", L"-File"
     };
-    if (command == L"build") {
+    if (command == L"config") {
+        result.push_back(join(options.root, L"scripts\\sync-firmware-config.ps1"));
+    } else if (command == L"build") {
         result.push_back(join(options.root, L"scripts\\build-releases.ps1"));
         result.push_back(L"-Edition");
         result.push_back(L"all");
@@ -319,7 +324,7 @@ DWORD WINAPI worker(LPVOID parameter)
 void setBusy(Gui* gui, bool busy)
 {
     gui->busy = busy;
-    const HWND controls[] = {gui->build, gui->installer};
+    const HWND controls[] = {gui->config, gui->build, gui->installer};
     for (HWND control : controls) EnableWindow(control, !busy);
     SetWindowTextW(gui->status, busy ? L"Операция выполняется…" : L"Готово к работе");
 }
@@ -365,10 +370,11 @@ void layout(Gui* gui, int width, int height)
     const int margin = 18;
     const int gap = 14;
     const int buttonWidth = (width - margin * 2 - gap) / 2;
-    MoveWindow(gui->build, margin, 18, buttonWidth, 64, TRUE);
-    MoveWindow(gui->installer, margin + buttonWidth + gap, 18, buttonWidth, 64, TRUE);
-    MoveWindow(gui->status, margin, 97, width - margin * 2, 22, TRUE);
-    MoveWindow(gui->log, margin, 126, width - margin * 2, height - 126 - margin, TRUE);
+    MoveWindow(gui->config, margin, 18, buttonWidth, 64, TRUE);
+    MoveWindow(gui->build, margin + buttonWidth + gap, 18, buttonWidth, 64, TRUE);
+    MoveWindow(gui->installer, margin, 96, width - margin * 2, 52, TRUE);
+    MoveWindow(gui->status, margin, 163, width - margin * 2, 22, TRUE);
+    MoveWindow(gui->log, margin, 192, width - margin * 2, height - 192 - margin, TRUE);
 }
 
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -384,18 +390,21 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         gui->font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        gui->build = control(gui, L"BUTTON", L"Перевыпустить собранное приложение",
-            BS_PUSHBUTTON | WS_TABSTOP, IdBuild, 18, 18, 330, 64);
-        gui->installer = control(gui, L"BUTTON", L"Перевыпустить установочные файлы",
-            BS_PUSHBUTTON | WS_TABSTOP, IdInstaller, 362, 18, 330, 64);
-        gui->status = control(gui, L"STATIC", L"Готово к работе", SS_LEFT, IdStatus, 18, 97, 674, 22);
-        gui->log = control(gui, L"EDIT", L"Выберите одну из двух операций. Подробный вывод появится здесь.\r\n",
+        gui->config = control(gui, L"BUTTON", L"1. Подготовить конфигурацию",
+            BS_PUSHBUTTON | WS_TABSTOP, IdConfig, 18, 18, 330, 64);
+        gui->build = control(gui, L"BUTTON", L"2. Собрать приложение из готовых файлов",
+            BS_PUSHBUTTON | WS_TABSTOP, IdBuild, 362, 18, 330, 64);
+        gui->installer = control(gui, L"BUTTON", L"Собрать установщики из готовых файлов",
+            BS_PUSHBUTTON | WS_TABSTOP, IdInstaller, 18, 96, 674, 52);
+        gui->status = control(gui, L"STATIC", L"Готово к работе", SS_LEFT, IdStatus, 18, 163, 674, 22);
+        gui->log = control(gui, L"EDIT", L"Сначала подготовьте конфигурацию, проверьте или отредактируйте JSON, затем запустите сборку.\r\n",
             WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-            IdLog, 18, 126, 674, 316);
+            IdLog, 18, 192, 674, 290);
         SendMessageW(gui->log, EM_SETLIMITTEXT, 8 * 1024 * 1024, 0);
         gui->projectRoot = searchRoot(currentDirectory());
         if (gui->projectRoot.empty()) gui->projectRoot = searchRoot(executableDirectory());
         if (gui->projectRoot.empty()) {
+            EnableWindow(gui->config, FALSE);
             EnableWindow(gui->build, FALSE);
             EnableWindow(gui->installer, FALSE);
             SetWindowTextW(gui->status, L"Корневая папка проекта не найдена");
@@ -417,6 +426,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_COMMAND:
         if (!gui) return 0;
         switch (LOWORD(wParam)) {
+        case IdConfig: start(gui, L"config"); break;
         case IdBuild: start(gui, L"build"); break;
         case IdInstaller: start(gui, L"installer"); break;
         }
@@ -478,7 +488,7 @@ int guiMain()
     Gui gui;
     HWND window = CreateWindowExW(0, windowClass.lpszClassName,
         L"обнови-БОЦ — перевыпуск", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 740, 500, nullptr, nullptr, instance, &gui);
+        CW_USEDEFAULT, CW_USEDEFAULT, 740, 570, nullptr, nullptr, instance, &gui);
     if (!window) return 2;
     ShowWindow(window, SW_SHOW);
     UpdateWindow(window);
@@ -519,7 +529,7 @@ int main()
         else if (argument == L"--help" || argument == L"-h") { help(); return 0; }
         else { error(L"неизвестный параметр '" + argument + L"' для команды '" + command + L"'"); return 2; }
     }
-    if (command != L"build" && command != L"installer") {
+    if (command != L"config" && command != L"build" && command != L"installer") {
         error(L"неизвестная команда '" + command + L"'");
         help();
         return 2;
