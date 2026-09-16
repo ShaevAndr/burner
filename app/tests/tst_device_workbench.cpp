@@ -346,6 +346,7 @@ private slots:
     void catalogExposesBocV12Actions();
     void catalogRecognizesBocV6();
     void profileSnapshotSurvivesCatalogReload();
+    void catalogMatchKeepsProfileOutOfIdentity();
     void workflowReloadKeepsActiveSnapshot();
     void actionRepositoryRejectsUnsupportedSchemaWithoutReplacingActions();
     void actionRepositoryValidatesProfileArtifacts();
@@ -2125,6 +2126,36 @@ void DeviceWorkbenchTest::pingActionIsAvailableForUnknownDevices()
     const QVector<ActionSpec> bulkActions = actions.commonActions({device});
     for (const ActionSpec& action : bulkActions)
         QVERIFY2(action.id != QStringLiteral("device.ping"), "Unknown-device ping must stay unavailable in bulk actions");
+}
+
+void DeviceWorkbenchTest::catalogMatchKeepsProfileOutOfIdentity()
+{
+    CatalogService catalog;
+    QString error;
+    QVERIFY2(catalog.load(sourceConfigPath(QStringLiteral("config/device-catalog.json")), &error),
+        qPrintable(error));
+    DeviceIdentity discovered;
+    discovered.type = 0x0A03;
+    discovered.description = QStringLiteral("БОЦ-В-12 (SW Jul 15 2026 19:10:21)");
+    discovered.capabilities.append(QStringLiteral("stale.capability"));
+    discovered.firmwareArtifacts.append(FirmwareArtifact{});
+
+    CatalogMatch matched = catalog.match(discovered);
+    QVERIFY(matched.profile);
+    QCOMPARE(matched.profile->id, QStringLiteral("boc.v12"));
+    QCOMPARE(matched.identity.currentFirmwareId, QStringLiteral("sw-2026-07-15-19-10-21"));
+    QVERIFY(matched.identity.capabilities.isEmpty());
+    QVERIFY(matched.identity.firmwareArtifacts.isEmpty());
+    QVERIFY(matched.identity.firmwareVersions.isEmpty());
+    QVERIFY(matched.identity.firmwareTransitions.isEmpty());
+    QCOMPARE(matched.identity.productionDateRegister, -1);
+
+    DeviceFactory factory(std::make_shared<FakeDeviceTransport>());
+    const auto device = factory.create(matched.identity, matched.profile);
+    QVERIFY(device);
+    QCOMPARE(device->firmwareVersions().size(), 3);
+    QCOMPARE(device->productionDateRegister(), 9);
+    QVERIFY(device->isFirmwareTargetAllowed(QStringLiteral("sw-2026-08-31-17-24-51")));
 }
 
 void DeviceWorkbenchTest::profileSnapshotSurvivesCatalogReload()

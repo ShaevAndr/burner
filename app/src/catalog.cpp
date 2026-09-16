@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
+#include <utility>
 
 static quint16 parseType(const QString& raw)
 {
@@ -394,7 +395,7 @@ std::shared_ptr<const DeviceProfile> CatalogService::profileForDevice(const Devi
     return keywordMatch;
 }
 
-DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
+CatalogMatch CatalogService::match(DeviceIdentity device) const
 {
     const std::shared_ptr<const DeviceProfile> profile = profileForDevice(device);
     device.state = descriptionContainsBoot(device.description)
@@ -402,6 +403,17 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
         : QStringLiteral("application");
     device.currentFirmwareId.clear();
     device.firmwareDetectionError.clear();
+    device.catalogId.clear();
+    device.name.clear();
+    device.descriptionKeywords.clear();
+    device.capabilities.clear();
+    device.applicationType = 0;
+    device.applicationVersion = 0;
+    device.bootloaderType = 0;
+    device.bootloaderVersion = 0;
+    device.productionDateRegister = -1;
+    device.serialNumberRegister = -1;
+    device.applicationLoadRegister = 0;
     device.firmwareArtifacts.clear();
     device.firmwareVersions.clear();
     device.firmwareTransitions.clear();
@@ -412,28 +424,15 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
         device.known = false;
         device.name = QStringLiteral("Unknown device");
         device.status = QStringLiteral("неизвестно");
-        return device;
+        return {std::move(device), {}};
     }
 
     device.known = true;
     device.catalogId = profile->id;
     device.name = profile->name;
-    device.descriptionKeywords = profile->descriptionKeywords;
-    device.capabilities = profile->capabilities;
-    device.applicationType = profile->applicationType;
-    device.applicationVersion = profile->applicationVersion;
-    device.bootloaderType = profile->bootloaderType;
-    device.bootloaderVersion = profile->bootloaderVersion;
-    device.productionDateRegister = profile->productionDateRegister;
-    device.serialNumberRegister = profile->serialNumberRegister;
-    device.applicationLoadRegister = profile->applicationLoadRegister;
-    device.firmwareArtifacts = profile->firmwareArtifacts;
-    device.firmwareVersions = profile->firmwareVersions;
-    device.firmwareTransitions = profile->firmwareTransitions;
-    device.allowUnknownCurrentFirmware = profile->allowUnknownCurrentFirmware;
 
     QStringList matchedFirmwareIds;
-    for (const FirmwareVersionSpec& firmware : device.firmwareVersions)
+    for (const FirmwareVersionSpec& firmware : profile->firmwareVersions)
     {
         if (!firmware.detectFromDescription)
             continue;
@@ -447,7 +446,7 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
         device.currentFirmwareId = matchedFirmwareIds.first();
         device.status = QStringLiteral("прошивка %1").arg(device.currentFirmwareId);
     }
-    else if (matchedFirmwareIds.isEmpty() && !device.firmwareVersions.isEmpty())
+    else if (matchedFirmwareIds.isEmpty() && !profile->firmwareVersions.isEmpty())
     {
         device.firmwareDetectionError = QStringLiteral("версия прошивки не определена");
         device.status = device.firmwareDetectionError;
@@ -462,5 +461,30 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
     {
         device.status = QStringLiteral("опознано");
     }
-    return device;
+    return {std::move(device), profile};
+}
+
+DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
+{
+    CatalogMatch matched = match(std::move(device));
+    if (!matched.profile)
+        return matched.identity;
+
+    // Compatibility for callers still working with identity-only catalog data.
+    // Runtime sessions use match() and retain the immutable profile separately.
+    DeviceIdentity& enriched = matched.identity;
+    enriched.descriptionKeywords = matched.profile->descriptionKeywords;
+    enriched.capabilities = matched.profile->capabilities;
+    enriched.applicationType = matched.profile->applicationType;
+    enriched.applicationVersion = matched.profile->applicationVersion;
+    enriched.bootloaderType = matched.profile->bootloaderType;
+    enriched.bootloaderVersion = matched.profile->bootloaderVersion;
+    enriched.productionDateRegister = matched.profile->productionDateRegister;
+    enriched.serialNumberRegister = matched.profile->serialNumberRegister;
+    enriched.applicationLoadRegister = matched.profile->applicationLoadRegister;
+    enriched.firmwareArtifacts = matched.profile->firmwareArtifacts;
+    enriched.firmwareVersions = matched.profile->firmwareVersions;
+    enriched.firmwareTransitions = matched.profile->firmwareTransitions;
+    enriched.allowUnknownCurrentFirmware = matched.profile->allowUnknownCurrentFirmware;
+    return enriched;
 }

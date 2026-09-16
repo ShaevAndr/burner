@@ -34,6 +34,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <utility>
 
 enum DiscoveryColumns
 {
@@ -570,9 +571,10 @@ void MainWindow::startDiscovery()
 
 void MainWindow::onDeviceFound(DeviceIdentity device)
 {
-    device = mServices->catalog().enrich(device);
+    CatalogMatch matched = mServices->catalog().match(std::move(device));
+    device = std::move(matched.identity);
     std::shared_ptr<DeviceBase> deviceObject = mDeviceFactory.create(
-        device, mServices->catalog().profileForDevice(device));
+        device, std::move(matched.profile));
     if (!deviceObject)
         return;
 
@@ -636,11 +638,12 @@ void MainWindow::onDeviceDataFinished(quint64 requestId,
     if (!pending.device || pending.discoveryGeneration != mDiscoveryGeneration)
         return;
 
-    identity = mServices->catalog().enrich(identity);
+    CatalogMatch matched = mServices->catalog().match(std::move(identity));
+    identity = std::move(matched.identity);
     if (!identity.uuid.isEmpty())
         identity.id = identity.uuid;
     pending.device->updateIdentity(identity);
-    pending.device->updateProfile(mServices->catalog().profileForDevice(identity));
+    pending.device->updateProfile(std::move(matched.profile));
     for (const QString& warning : warnings)
         appendLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), warning));
     if (!rawResponse.isEmpty())
@@ -841,9 +844,10 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
                 return;
             if (!identity.uuid.isEmpty())
                 identity.id = identity.uuid;
-            identity = mServices->catalog().enrich(identity);
+            CatalogMatch matched = mServices->catalog().match(std::move(identity));
+            identity = std::move(matched.identity);
             devices.at(deviceIndex)->updateIdentity(identity);
-            devices.at(deviceIndex)->updateProfile(mServices->catalog().profileForDevice(identity));
+            devices.at(deviceIndex)->updateProfile(std::move(matched.profile));
             for (int row = 0; row < mDevices.size(); ++row)
             {
                 if (mDevices.at(row) == devices.at(deviceIndex))

@@ -8,10 +8,17 @@
 #include <QVector>
 #include <memory>
 
+struct CatalogMatch
+{
+    DeviceIdentity identity;
+    std::shared_ptr<const DeviceProfile> profile;
+};
+
 class CatalogService
 {
 public:
     bool load(const QString& fileName, QString* error = nullptr);
+    CatalogMatch match(DeviceIdentity device) const;
     DeviceIdentity enrich(DeviceIdentity device) const;
     std::shared_ptr<const DeviceProfile> profileForDevice(const DeviceIdentity& device) const;
     const QVector<std::shared_ptr<const DeviceProfile>>& profiles() const { return mProfiles; }
