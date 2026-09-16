@@ -58,37 +58,24 @@ const QVector<FirmwareArtifact>& DeviceBase::firmwareArtifacts() const
 
 const FirmwareVersionSpec* DeviceBase::firmwareVersionById(const QString& id) const
 {
-    for (const FirmwareVersionSpec& version : firmwareVersions())
-    {
-        if (version.id == id)
-            return &version;
-    }
-    return nullptr;
+    return mSession.profile ? mSession.profile->firmwareVersionById(id)
+        : mSession.identity.firmwareVersionById(id);
 }
 
 const FirmwareTransitionSpec* DeviceBase::transitionTo(const QString& targetFirmwareId) const
 {
-    const auto& transitions = mSession.profile
-        ? mSession.profile->firmwareTransitions : mSession.identity.firmwareTransitions;
-    for (const FirmwareTransitionSpec& transition : transitions)
-    {
-        if (transition.from == mSession.identity.currentFirmwareId
-            && transition.to == targetFirmwareId)
-            return &transition;
-    }
-    return nullptr;
+    return mSession.profile
+        ? mSession.profile->transitionFrom(mSession.identity.currentFirmwareId,
+            targetFirmwareId)
+        : mSession.identity.transitionTo(targetFirmwareId);
 }
 
 bool DeviceBase::isFirmwareTargetAllowed(const QString& targetFirmwareId) const
 {
     if (!mSession.profile)
         return mSession.identity.isFirmwareTargetAllowed(targetFirmwareId);
-    if (!firmwareVersionById(targetFirmwareId))
-        return false;
-    if (mSession.identity.currentFirmwareId.isEmpty())
-        return mSession.profile->allowUnknownCurrentFirmware;
-    const FirmwareTransitionSpec* transition = transitionTo(targetFirmwareId);
-    return transition && transition->enabled;
+    return mSession.profile->isFirmwareTargetAllowed(
+        mSession.identity.currentFirmwareId, targetFirmwareId);
 }
 
 bool DeviceBase::allowUnknownCurrentFirmware() const
@@ -99,18 +86,9 @@ bool DeviceBase::allowUnknownCurrentFirmware() const
 
 FirmwareArtifact DeviceBase::firmwareForTarget(const QString& target) const
 {
-    FirmwareArtifact first;
-    for (const FirmwareArtifact& artifact : firmwareArtifacts())
-    {
-        if (artifact.target != target
-            || !artifact.isAllowedFromFirmware(mSession.identity.currentFirmwareId))
-            continue;
-        if (first.relativePath.isEmpty())
-            first = artifact;
-        if (artifact.isDefault)
-            return artifact;
-    }
-    return first;
+    return mSession.profile
+        ? mSession.profile->firmwareForTarget(mSession.identity.currentFirmwareId, target)
+        : mSession.identity.firmwareForTarget(target);
 }
 
 QString DeviceBase::className() const

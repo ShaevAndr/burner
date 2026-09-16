@@ -219,6 +219,56 @@ struct DeviceProfile
     QVector<FirmwareVersionSpec> firmwareVersions;
     QVector<FirmwareTransitionSpec> firmwareTransitions;
     bool allowUnknownCurrentFirmware = true;
+
+    const FirmwareVersionSpec* firmwareVersionById(const QString& firmwareId) const
+    {
+        for (const FirmwareVersionSpec& firmware : firmwareVersions)
+        {
+            if (firmware.id == firmwareId)
+                return &firmware;
+        }
+        return nullptr;
+    }
+
+    const FirmwareTransitionSpec* transitionFrom(const QString& currentFirmwareId,
+        const QString& targetFirmwareId) const
+    {
+        for (const FirmwareTransitionSpec& transition : firmwareTransitions)
+        {
+            if (transition.from == currentFirmwareId && transition.to == targetFirmwareId)
+                return &transition;
+        }
+        return nullptr;
+    }
+
+    bool isFirmwareTargetAllowed(const QString& currentFirmwareId,
+        const QString& targetFirmwareId) const
+    {
+        if (!firmwareVersionById(targetFirmwareId))
+            return false;
+        if (currentFirmwareId.isEmpty())
+            return allowUnknownCurrentFirmware;
+        const FirmwareTransitionSpec* transition = transitionFrom(
+            currentFirmwareId, targetFirmwareId);
+        return transition && transition->enabled;
+    }
+
+    FirmwareArtifact firmwareForTarget(const QString& currentFirmwareId,
+        const QString& target) const
+    {
+        FirmwareArtifact first;
+        for (const FirmwareArtifact& artifact : firmwareArtifacts)
+        {
+            if (artifact.target != target
+                || !artifact.isAllowedFromFirmware(currentFirmwareId))
+                continue;
+            if (first.relativePath.isEmpty())
+                first = artifact;
+            if (artifact.isDefault)
+                return artifact;
+        }
+        return first;
+    }
 };
 
 struct ActionSpec

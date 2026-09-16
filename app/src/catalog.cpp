@@ -422,14 +422,11 @@ CatalogMatch CatalogService::match(DeviceIdentity device) const
     if (!profile)
     {
         device.known = false;
-        device.name = QStringLiteral("Unknown device");
         device.status = QStringLiteral("неизвестно");
         return {std::move(device), {}};
     }
 
     device.known = true;
-    device.catalogId = profile->id;
-    device.name = profile->name;
 
     QStringList matchedFirmwareIds;
     for (const FirmwareVersionSpec& firmware : profile->firmwareVersions)
@@ -468,11 +465,16 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
 {
     CatalogMatch matched = match(std::move(device));
     if (!matched.profile)
+    {
+        matched.identity.name = QStringLiteral("Unknown device");
         return matched.identity;
+    }
 
     // Compatibility for callers still working with identity-only catalog data.
     // Runtime sessions use match() and retain the immutable profile separately.
     DeviceIdentity& enriched = matched.identity;
+    enriched.catalogId = matched.profile->id;
+    enriched.name = matched.profile->name;
     enriched.descriptionKeywords = matched.profile->descriptionKeywords;
     enriched.capabilities = matched.profile->capabilities;
     enriched.applicationType = matched.profile->applicationType;

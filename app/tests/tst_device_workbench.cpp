@@ -2148,14 +2148,22 @@ void DeviceWorkbenchTest::catalogMatchKeepsProfileOutOfIdentity()
     QVERIFY(matched.identity.firmwareArtifacts.isEmpty());
     QVERIFY(matched.identity.firmwareVersions.isEmpty());
     QVERIFY(matched.identity.firmwareTransitions.isEmpty());
+    QVERIFY(matched.identity.catalogId.isEmpty());
+    QVERIFY(matched.identity.name.isEmpty());
     QCOMPARE(matched.identity.productionDateRegister, -1);
 
+    FirmwareArtifact staleArtifact;
+    staleArtifact.target = QStringLiteral("application");
+    staleArtifact.relativePath = QStringLiteral("flash/stale.hex");
+    matched.identity.firmwareArtifacts.append(staleArtifact);
     DeviceFactory factory(std::make_shared<FakeDeviceTransport>());
     const auto device = factory.create(matched.identity, matched.profile);
     QVERIFY(device);
     QCOMPARE(device->firmwareVersions().size(), 3);
     QCOMPARE(device->productionDateRegister(), 9);
     QVERIFY(device->isFirmwareTargetAllowed(QStringLiteral("sw-2026-08-31-17-24-51")));
+    QCOMPARE(device->firmwareForTarget(QStringLiteral("application")).relativePath,
+        QStringLiteral("flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex"));
 }
 
 void DeviceWorkbenchTest::profileSnapshotSurvivesCatalogReload()

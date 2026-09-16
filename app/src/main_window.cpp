@@ -1432,9 +1432,11 @@ void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceB
     check->setCheckState(previousCheckState);
     check->setToolTip(QStringLiteral("Выбрать устройство для группового действия"));
     mDiscoveryTable->setItem(row, DiscoveryCheck, check);
+    const QString modelName = device->profile()
+        ? device->profile()->name : QStringLiteral("Unknown device");
     const QString deviceText = identity.description.isEmpty()
-        ? identity.name
-        : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
+        ? modelName
+        : QStringLiteral("%1\n%2").arg(modelName, identity.description);
     QTableWidgetItem* deviceItem = new QTableWidgetItem(deviceText);
     deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
         .arg(identity.typeHex(), identity.versionHex(), identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
