@@ -253,8 +253,8 @@ bool CatalogService::load(const QString& fileName, QString* error)
         const QJsonObject operationParameters = object.value(QStringLiteral("operationParameters")).toObject();
         entry.productionDateRegister = operationParameters.value(QStringLiteral("productionDateRegister")).toInt(-1);
         entry.serialNumberRegister = operationParameters.value(QStringLiteral("serialNumberRegister")).toInt(-1);
+        entry.applicationLoadRegister = operationParameters.value(QStringLiteral("applicationLoadRegister")).toInt(0);
         entry.name = object.value(QStringLiteral("name")).toString();
-        entry.deviceClass = object.value(QStringLiteral("deviceClass")).toString(QStringLiteral("DeviceBase"));
 
         const QJsonArray keywords = object.value(QStringLiteral("descriptionKeywords")).toArray();
         for (const QJsonValue& keyword : keywords)
@@ -270,7 +270,8 @@ bool CatalogService::load(const QString& fileName, QString* error)
         if ((entry.capabilities.contains(QStringLiteral("device.productionDate.update"))
                 && entry.productionDateRegister < 0)
             || (entry.capabilities.contains(QStringLiteral("device.serialNumber.update"))
-                && entry.serialNumberRegister < 0))
+                && entry.serialNumberRegister < 0)
+            || entry.applicationLoadRegister < 0 || entry.applicationLoadRegister > 65535)
         {
             if (error)
                 *error = QStringLiteral("Device %1 enables date/serial update without configured registers")
@@ -329,33 +330,73 @@ bool CatalogService::load(const QString& fileName, QString* error)
         return false;
     }
 
-    mEntriesByType = std::move(loadedEntries);
-    mEntries = std::move(catalogEntries);
-    mFirmwareByDeviceId = std::move(firmwareByDeviceId);
+    QHash<quint16, std::shared_ptr<const DeviceProfile>> profilesByType;
+    QVector<std::shared_ptr<const DeviceProfile>> profiles;
+    for (const CatalogEntry& entry : catalogEntries)
+    {
+        auto profile = std::make_shared<DeviceProfile>();
+        profile->id = entry.id;
+        profile->protocol = entry.protocol;
+        profile->applicationType = entry.type;
+        profile->applicationVersion = entry.version;
+        profile->bootloaderType = entry.bootloaderType;
+        profile->bootloaderVersion = entry.bootloaderVersion;
+        profile->name = entry.name;
+        profile->descriptionKeywords = entry.descriptionKeywords;
+        profile->capabilities = entry.capabilities;
+        profile->applicationLoadRegister = entry.applicationLoadRegister;
+        profile->productionDateRegister = entry.productionDateRegister;
+        profile->serialNumberRegister = entry.serialNumberRegister;
+        const auto firmware = firmwareByDeviceId.constFind(entry.id);
+        if (firmware != firmwareByDeviceId.constEnd())
+        {
+            profile->firmwareArtifacts = firmware->firmwareArtifacts;
+            profile->firmwareVersions = firmware->firmwareVersions;
+            profile->firmwareTransitions = firmware->firmwareTransitions;
+            profile->allowUnknownCurrentFirmware = firmware->allowUnknownCurrentFirmware;
+        }
+        for (const FirmwareArtifact& artifact : profile->firmwareArtifacts)
+        {
+            if (artifact.target == QStringLiteral("bootloader")
+                && !artifact.relativePath.isEmpty()
+                && !profile->capabilities.contains(QStringLiteral("flash.bootloader.write")))
+            {
+                profile->capabilities.append(QStringLiteral("flash.bootloader.write"));
+            }
+        }
+        const std::shared_ptr<const DeviceProfile> immutable = profile;
+        if (entry.type)
+            profilesByType.insert(entry.type, immutable);
+        if (entry.bootloaderType)
+            profilesByType.insert(entry.bootloaderType, immutable);
+        profiles.append(immutable);
+    }
+    mProfilesByType = std::move(profilesByType);
+    mProfiles = std::move(profiles);
     return true;
 }
 
-const CatalogEntry* CatalogService::entryForDevice(const DeviceIdentity& device) const
+std::shared_ptr<const DeviceProfile> CatalogService::profileForDevice(const DeviceIdentity& device) const
 {
-    const auto direct = mEntriesByType.constFind(device.type);
-    if (direct != mEntriesByType.constEnd())
-        return &direct.value();
+    const auto direct = mProfilesByType.constFind(device.type);
+    if (direct != mProfilesByType.constEnd())
+        return direct.value();
 
-    const CatalogEntry* keywordMatch = nullptr;
-    for (const CatalogEntry& entry : mEntries)
+    std::shared_ptr<const DeviceProfile> keywordMatch;
+    for (const auto& profile : mProfiles)
     {
-        if (!descriptionContainsKeywords(device.description, entry.descriptionKeywords))
+        if (!descriptionContainsKeywords(device.description, profile->descriptionKeywords))
             continue;
         if (keywordMatch)
-            return nullptr;
-        keywordMatch = &entry;
+            return {};
+        keywordMatch = profile;
     }
     return keywordMatch;
 }
 
 DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
 {
-    const CatalogEntry* entry = entryForDevice(device);
+    const std::shared_ptr<const DeviceProfile> profile = profileForDevice(device);
     device.state = descriptionContainsBoot(device.description)
         ? QStringLiteral("bootloader")
         : QStringLiteral("application");
@@ -366,7 +407,7 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
     device.firmwareTransitions.clear();
     device.allowUnknownCurrentFirmware = true;
 
-    if (!entry)
+    if (!profile)
     {
         device.known = false;
         device.name = QStringLiteral("Unknown device");
@@ -375,44 +416,21 @@ DeviceIdentity CatalogService::enrich(DeviceIdentity device) const
     }
 
     device.known = true;
-    device.catalogId = entry->id;
-    device.name = entry->name;
-    device.descriptionKeywords = entry->descriptionKeywords;
-    device.deviceClass = entry->deviceClass;
-    device.capabilities = entry->capabilities;
-    device.applicationType = entry->type;
-    device.applicationVersion = entry->version;
-    device.bootloaderType = entry->bootloaderType;
-    device.bootloaderVersion = entry->bootloaderVersion;
-    device.productionDateRegister = entry->productionDateRegister;
-    device.serialNumberRegister = entry->serialNumberRegister;
-
-    const auto firmwareIt = mFirmwareByDeviceId.constFind(entry->id);
-    if (firmwareIt == mFirmwareByDeviceId.constEnd())
-    {
-        device.status = QStringLiteral("опознано");
-        return device;
-    }
-
-    device.firmwareArtifacts = firmwareIt->firmwareArtifacts;
-    device.firmwareVersions = firmwareIt->firmwareVersions;
-    device.firmwareTransitions = firmwareIt->firmwareTransitions;
-    device.allowUnknownCurrentFirmware = firmwareIt->allowUnknownCurrentFirmware;
-
-    // Bootloader flashing is data-driven: every recognized application gets
-    // the action as soon as its firmware catalog contains a bootloader image.
-    // This keeps adding a new device to app/flash independent from a manually
-    // maintained capability flag in the device entry.
-    for (const FirmwareArtifact& artifact : device.firmwareArtifacts)
-    {
-        if (artifact.target == QStringLiteral("bootloader")
-            && !artifact.relativePath.isEmpty())
-        {
-            if (!device.capabilities.contains(QStringLiteral("flash.bootloader.write")))
-                device.capabilities.append(QStringLiteral("flash.bootloader.write"));
-            break;
-        }
-    }
+    device.catalogId = profile->id;
+    device.name = profile->name;
+    device.descriptionKeywords = profile->descriptionKeywords;
+    device.capabilities = profile->capabilities;
+    device.applicationType = profile->applicationType;
+    device.applicationVersion = profile->applicationVersion;
+    device.bootloaderType = profile->bootloaderType;
+    device.bootloaderVersion = profile->bootloaderVersion;
+    device.productionDateRegister = profile->productionDateRegister;
+    device.serialNumberRegister = profile->serialNumberRegister;
+    device.applicationLoadRegister = profile->applicationLoadRegister;
+    device.firmwareArtifacts = profile->firmwareArtifacts;
+    device.firmwareVersions = profile->firmwareVersions;
+    device.firmwareTransitions = profile->firmwareTransitions;
+    device.allowUnknownCurrentFirmware = profile->allowUnknownCurrentFirmware;
 
     QStringList matchedFirmwareIds;
     for (const FirmwareVersionSpec& firmware : device.firmwareVersions)

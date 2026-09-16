@@ -9,6 +9,15 @@
 #include <QVariantMap>
 #include <QVector>
 #include <functional>
+#include <memory>
+
+struct FirmwareWritePlan
+{
+    int flashNum = 0;
+    int pageSize = 0;
+    QVector<int> pageNumbers;
+    QVector<QByteArray> pages;
+};
 
 struct FirmwareFlashPlan
 {
@@ -25,9 +34,7 @@ struct FirmwareFlashPlan
     int pageSize = 2048;
     int beginPage = 0;
     int endPage = 0;
-    int firstWrittenPage = 0;
-    QVector<int> expectedPageNumbers;
-    QVector<QByteArray> expectedPages;
+    std::shared_ptr<const FirmwareWritePlan> writePlan;
 };
 
 struct FirmwareFlashCallbacks
@@ -36,15 +43,22 @@ struct FirmwareFlashCallbacks
     std::function<void(const QString&)> transportLog;
     std::function<void(int)> progress;
     std::function<void()> processEvents;
+    std::function<bool()> shouldCancel;
 };
+
+// Offline validation runs before any reset or flash write.
+bool validateFirmwareImage(const FirmwareFlashPlan& plan, QString* error = nullptr);
 
 class FirmwareFlashStrategy
 {
 public:
     virtual ~FirmwareFlashStrategy() = default;
     virtual QString id() const = 0;
-    virtual bool flash(DeviceBase& device,
+    virtual bool prepare(DeviceBase& device,
         FirmwareFlashPlan& plan,
+        const FirmwareFlashCallbacks& callbacks) const = 0;
+    virtual bool flash(DeviceBase& device,
+        const FirmwareFlashPlan& plan,
         const FirmwareFlashCallbacks& callbacks) const = 0;
 };
 

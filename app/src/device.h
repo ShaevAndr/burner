@@ -10,7 +10,8 @@ class DeviceFactory
 public:
     explicit DeviceFactory(std::shared_ptr<IDeviceTransport> transport = {});
 
-    std::shared_ptr<DeviceBase> create(const DeviceIdentity& identity) const;
+    std::shared_ptr<DeviceBase> create(const DeviceIdentity& identity,
+        std::shared_ptr<const DeviceProfile> profile = {}) const;
 
 private:
     std::shared_ptr<IDeviceTransport> mTransport;

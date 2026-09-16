@@ -7,6 +7,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QSignalSpy>
@@ -14,14 +17,19 @@
 #include <QTcpSocket>
 #include <QThread>
 #include <QTime>
+#include <QTemporaryDir>
 #include <QUuid>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 
 #include "../src/action_repository.h"
 #include "../src/catalog.h"
 #include "../src/device.h"
+#include "../src/execution_journal.h"
 #include "../src/firmware_access_policy.h"
+#include "../src/job_scheduler.h"
 #include "../src/transport/unicorn_ascii_transport.h"
 #include "../src/workflow.h"
 #include "../src/workers.h"
@@ -122,7 +130,8 @@ public:
     {
         uuidReadCalls++;
         if (uuid)
-            *uuid = device.uuid.isEmpty() ? uuidValue : device.uuid;
+            *uuid = !uuidOverride.isEmpty() ? uuidOverride
+                : (device.uuid.isEmpty() ? uuidValue : device.uuid);
         if (rawResponse)
             *rawResponse = QStringLiteral("TX :010702\\r\nRX !0107410FC2413431384D123536353133584F99\\r");
         return true;
@@ -190,6 +199,7 @@ public:
     int waitForIdentityCalls = 0;
     int uuidReadCalls = 0;
     QString uuidValue = QStringLiteral("410FC241-3431-384D-1235-36353133584F");
+    QString uuidOverride;
     bool failWrites = false;
     bool waitForIdentityResult = true;
     int noReplyWriteDelayMs = 0;
@@ -331,6 +341,10 @@ private slots:
     void embeddedPayloadIsAvailable();
     void catalogExposesBocV12Actions();
     void catalogRecognizesBocV6();
+    void profileSnapshotSurvivesCatalogReload();
+    void workflowReloadKeepsActiveSnapshot();
+    void actionRepositoryRejectsUnsupportedSchemaWithoutReplacingActions();
+    void executionJournalRecoversInterruptedDevice();
     void workflowEmitsProgressForTestFlash();
     void workflowEmitsProductionDateSequence();
     void workflowWritesProductionDateRegistersInOrder();
@@ -338,6 +352,7 @@ private slots:
     void workflowSkipsProtectedSettingsWithoutFactoryKey();
     void workflowWorkerRunsDevicesInParallel();
     void workflowWorkerLimitsParallelDevicesToFive();
+    void schedulerSerializesSamePhysicalDevice();
     void catalogDetectsDeviceState();
     void workflowWritesSerialNumberRegisterInBootloader();
     void applicationLoadActionIsAvailableForBootloader();
@@ -345,6 +360,8 @@ private slots:
     void workflowWritesApplicationFlashPagesFromBootloader();
     void bootloaderWorkflowWritesAndVerifiesFromApplication();
     void workflowParsesIntelHexBeforeWriting();
+    void invalidHexStopsBeforeDeviceReset();
+    void changedUuidStopsBeforeDeviceReset();
     void workflowLoadsConfiguredBocV6Firmware();
     void workflowRejectsBootloaderWithDifferentUuid();
     void workflowExecutesAllowedFirmwareTransition();
@@ -376,15 +393,17 @@ void DeviceWorkbenchTest::embeddedPayloadIsAvailable()
     QVERIFY2(actions.load(QStringLiteral(":/config/actions.json"), &error), qPrintable(error));
     QVERIFY2(workflows.load(QStringLiteral(":/config/workflows.json"), &error), qPrintable(error));
 
-    const WorkflowDefinition* bootloaderWorkflow = workflows.definitionForId(
+    const auto bootloaderWorkflow = workflows.snapshotForId(
         QStringLiteral("firmware.bootloader.direct"));
     QVERIFY(bootloaderWorkflow);
     QStringList bootloaderOperations;
     for (const WorkflowStep& step : bootloaderWorkflow->steps)
         bootloaderOperations.append(step.op);
     QCOMPARE(bootloaderOperations, QStringList({
+        QStringLiteral("device.ensureUuid"),
         QStringLiteral("flash.prepare"),
         QStringLiteral("flash.validateArtifact"),
+        QStringLiteral("flash.buildPagePlan"),
         QStringLiteral("firmware.flash"),
         QStringLiteral("firmware.verify"),
         QStringLiteral("workflow.finish")
@@ -429,7 +448,7 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     QCOMPARE(device.productionDateRegister, 9);
     QCOMPARE(device.serialNumberRegister, 10);
     QCOMPARE(device.firmwareVersions.size(), 3);
-    QCOMPARE(device.firmwareTransitions.size(), 3);
+    QCOMPARE(device.firmwareTransitions.size(), 2);
     QVERIFY(!device.allowUnknownCurrentFirmware);
     QVERIFY2(device.capabilities.contains(QStringLiteral("flash.bootloader.write")),
         "A recognized model with a bootloader artifact must receive the flash action automatically");
@@ -465,6 +484,18 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     QCOMPARE(available.at(3).id, QStringLiteral("device.serialNumber.update"));
     QCOMPARE(available.at(4).id, QStringLiteral("device.ping"));
 
+    DeviceIdentity leanIdentity = device;
+    leanIdentity.capabilities.clear();
+    leanIdentity.firmwareArtifacts.clear();
+    leanIdentity.firmwareVersions.clear();
+    leanIdentity.firmwareTransitions.clear();
+    DeviceFactory factory(std::make_shared<FakeDeviceTransport>());
+    const auto session = factory.create(leanIdentity, catalog.profileForDevice(device));
+    QCOMPARE(actions.actionsForDevice(*session).size(), available.size());
+    QCOMPARE(session->firmwareVersions().size(), 3);
+    QVERIFY(session->isFirmwareTargetAllowed(QStringLiteral("sw-2026-08-31-17-24-51")));
+    QVERIFY(!session->firmwareForTarget(QStringLiteral("bootloader")).relativePath.isEmpty());
+
     const FirmwareArtifact defaultApplication = device.firmwareForTarget(QStringLiteral("application"));
     QVERIFY(defaultApplication.isDefault);
     QCOMPARE(defaultApplication.relativePath, QStringLiteral("flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex"));
@@ -474,7 +505,7 @@ void DeviceWorkbenchTest::catalogExposesBocV12Actions()
     QCOMPARE(bootloaderArtifact.relativePath,
         QStringLiteral("flash/boc-v12/bootloader/BOCv12_GD32F470Z_BootLoader20260820_150326.hex"));
     QCOMPARE(bootloaderArtifact.sha256,
-        QStringLiteral("35D88F87F3B0529CE606E778C0A4B12DDB0A1B31AF39C22C1DFC81571AD183B0"));
+        QStringLiteral("214710A78B4F3645F3351CE253B1D997645725B24A34A9F669EB329EDDE3D9B3"));
     QCOMPARE(bootloaderArtifact.flashStrategy, QStringLiteral("page-flash"));
     QCOMPARE(bootloaderArtifact.allowedFromFirmwareIds, QStringList({
         QStringLiteral("sw-2026-07-08-12-51-18"),
@@ -528,7 +559,7 @@ void DeviceWorkbenchTest::catalogRecognizesBocV6()
     QCOMPARE(device.version, quint16(0x4321));
     QCOMPARE(device.catalogId, QStringLiteral("boc.v6"));
     QCOMPARE(device.name, QStringLiteral("БОЦ-В-6"));
-    QCOMPARE(device.deviceClass, QStringLiteral("DeviceBase"));
+    QCOMPARE(device.applicationLoadRegister, 0);
     QCOMPARE(device.descriptionKeywords, QStringList{QStringLiteral("БОЦ-В-6")});
     QCOMPARE(device.currentFirmwareId, QStringLiteral("sw-2026-08-31-10-01-24"));
     QCOMPARE(device.bootloaderType, quint16(0x1000));
@@ -663,7 +694,8 @@ void DeviceWorkbenchTest::workflowEmitsProgressForTestFlash()
     const QString previousCurrentPath = QDir::currentPath();
     QDir::setCurrent(tempDir.path());
 
-    DeviceFactory factory;
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    DeviceFactory factory(transport);
     auto deviceObject = factory.create(device);
     QVERIFY(deviceObject);
 
@@ -673,6 +705,7 @@ void DeviceWorkbenchTest::workflowEmitsProgressForTestFlash()
     WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
     QSignalSpy stageSpy(&runner, &WorkflowRunner::stageChanged);
+    QSignalSpy completedSpy(&runner, &WorkflowRunner::stepCompleted);
     runner.run(action, {deviceObject});
 
     QDir::setCurrent(previousCurrentPath);
@@ -692,7 +725,10 @@ void DeviceWorkbenchTest::workflowEmitsProgressForTestFlash()
 
     QVERIFY2(sawProgress, "Expected simulated flash progress log messages");
     QVERIFY2(!stageSpy.isEmpty(), "Expected structured workflow stage notifications");
-    QCOMPARE(stageSpy.first().at(0).toString(), QStringLiteral("flash.prepare"));
+    QCOMPARE(stageSpy.first().at(0).toString(), QStringLiteral("device.ensureUuid"));
+    QCOMPARE(completedSpy.size(), workflows.snapshotForId(QStringLiteral("flash.write"))->steps.size());
+    QCOMPARE(completedSpy.last().at(0).toString(), QStringLiteral("workflow.finish"));
+    QCOMPARE(transport->flashWrites.size(), 0);
 }
 
 void DeviceWorkbenchTest::workflowEmitsProductionDateSequence()
@@ -1024,6 +1060,48 @@ void DeviceWorkbenchTest::workflowWorkerLimitsParallelDevicesToFive()
         QCOMPARE(transport->noReplyWrites.size(), 1);
 }
 
+void DeviceWorkbenchTest::schedulerSerializesSamePhysicalDevice()
+{
+    DeviceIdentity first;
+    first.endpoint = QStringLiteral("192.0.2.10:2001");
+    first.uuid = QStringLiteral("SAME-UUID");
+    DeviceIdentity second = first;
+    second.endpoint = QStringLiteral("192.0.2.11:2001");
+    DeviceFactory factory(std::make_shared<FakeDeviceTransport>());
+    const auto firstDevice = factory.create(first);
+    const auto secondDevice = factory.create(second);
+
+    std::atomic<int> active{0};
+    std::atomic<int> maximum{0};
+    JobScheduler scheduler(2);
+    const auto recordActive = [&active, &maximum]() {
+        const int current = ++active;
+        int observed = maximum.load();
+        while (observed < current
+            && !maximum.compare_exchange_weak(observed, current))
+        {
+        }
+        QThread::msleep(80);
+        --active;
+    };
+    scheduler.run({firstDevice, secondDevice},
+        [&recordActive](int, const QString&, const QString&, bool hasKey) {
+            if (hasKey)
+                recordActive();
+        });
+    QCOMPARE(maximum.load(), 1);
+
+    second.uuid = QStringLiteral("OTHER-UUID");
+    secondDevice->updateIdentity(second);
+    maximum = 0;
+    scheduler.run({firstDevice, secondDevice},
+        [&recordActive](int, const QString&, const QString&, bool hasKey) {
+            if (hasKey)
+                recordActive();
+        });
+    QCOMPARE(maximum.load(), 2);
+}
+
 void DeviceWorkbenchTest::catalogDetectsDeviceState()
 {
     CatalogService catalog;
@@ -1056,7 +1134,6 @@ void DeviceWorkbenchTest::workflowWritesSerialNumberRegisterInBootloader()
     device.version = 0x0000;
     device.known = true;
     device.catalogId = QStringLiteral("boc.v12");
-    device.deviceClass = QStringLiteral("BocV12Device");
     device.name = QStringLiteral("Р‘РћР¦-Р’-12");
     device.state = QStringLiteral("bootloader");
     device.description = QStringLiteral("Р‘Р»РѕРє РѕР±СЂР°Р±РѕС‚РєРё С†РёС„СЂРѕРІРѕР№ (Р‘РћР¦-Р’-12) (Boot)");
@@ -1151,7 +1228,6 @@ void DeviceWorkbenchTest::workflowLoadsApplicationFromBootloaderWithoutWaitingFo
     device.version = 0x0000;
     device.known = true;
     device.catalogId = QStringLiteral("boc.v12");
-    device.deviceClass = QStringLiteral("BocV12Device");
     device.name = QStringLiteral("БОЦ-В-12");
     device.state = QStringLiteral("bootloader");
     device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-12) (Boot)");
@@ -1193,6 +1269,16 @@ void DeviceWorkbenchTest::workflowLoadsApplicationFromBootloaderWithoutWaitingFo
         }
     }
     QVERIFY2(sawFinishedLog, "Workflow must finish after application identity is confirmed");
+
+    DeviceIdentity expectedDevice = device;
+    expectedDevice.uuid = QStringLiteral("EXPECTED-UUID");
+    auto wrongApplication = std::make_shared<FakeDeviceTransport>();
+    wrongApplication->discoveredIdentity.uuid = QStringLiteral("OTHER-UUID");
+    DeviceFactory mismatchFactory(wrongApplication);
+    const auto mismatchDevice = mismatchFactory.create(expectedDevice);
+    QVERIFY(!runner.run(action, {mismatchDevice}));
+    QCOMPARE(wrongApplication->noReplyWrites.size(), 1);
+    QCOMPARE(mismatchDevice->identity().state, QStringLiteral("bootloader"));
 }
 
 void DeviceWorkbenchTest::workflowWritesApplicationFlashPagesFromBootloader()
@@ -1226,7 +1312,6 @@ void DeviceWorkbenchTest::workflowWritesApplicationFlashPagesFromBootloader()
     device.version = 0x0000;
     device.known = true;
     device.catalogId = QStringLiteral("boc.v12");
-    device.deviceClass = QStringLiteral("BocV12Device");
     device.name = QStringLiteral("БОЦ-В-12");
     device.state = QStringLiteral("bootloader");
     device.channel = QStringLiteral("UDP");
@@ -1265,6 +1350,30 @@ void DeviceWorkbenchTest::workflowWritesApplicationFlashPagesFromBootloader()
     QCOMPARE(transport->flashWrites.at(1).page.left(952), firmware.mid(2048));
     QCOMPARE(quint8(transport->flashWrites.at(1).page.at(952)), quint8(0xFF));
     QCOMPARE(transport->flashReads.size(), 2);
+
+    // A smaller flash must fail while building the page plan, before any page is written.
+    transport->flashParams = {FlashMemoryParams{1, 2048}};
+    const int writesBeforeRejectedPlan = transport->flashWrites.size();
+    QDir::setCurrent(tempDir.path());
+    QVERIFY(!runner.run(action, {deviceObject}));
+    QDir::setCurrent(previousCurrentPath);
+    QCOMPARE(transport->flashWrites.size(), writesBeforeRejectedPlan);
+
+    transport->flashParams = {FlashMemoryParams{4, 2048}};
+    const int writesBeforeCancellation = transport->flashWrites.size();
+    auto cancelToken = std::make_shared<std::atomic_bool>(false);
+    WorkflowRunner cancelRunner(&workflows);
+    cancelRunner.setCancellationToken(cancelToken);
+    connect(&cancelRunner, &WorkflowRunner::progressChanged, this,
+        [transport, cancelToken, writesBeforeCancellation](int) {
+            if (transport->flashWrites.size() > writesBeforeCancellation)
+                cancelToken->store(true);
+        });
+    QDir::setCurrent(tempDir.path());
+    QVERIFY(!cancelRunner.run(action, {deviceObject}));
+    QDir::setCurrent(previousCurrentPath);
+    QCOMPARE(transport->flashWrites.size(), writesBeforeCancellation + 1);
+    QCOMPARE(cancelRunner.lastError().code, QStringLiteral("OPERATION_CANCELLED"));
 }
 
 void DeviceWorkbenchTest::bootloaderWorkflowWritesAndVerifiesFromApplication()
@@ -1433,6 +1542,105 @@ void DeviceWorkbenchTest::workflowParsesIntelHexBeforeWriting()
     QVERIFY(sawIgnoredRam);
 }
 
+void DeviceWorkbenchTest::invalidHexStopsBeforeDeviceReset()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QByteArray brokenHex = QByteArrayLiteral(":00000001FE\n");
+    const QString firmwarePath = directory.filePath(QStringLiteral("broken.hex"));
+    QFile firmwareFile(firmwarePath);
+    QVERIFY(firmwareFile.open(QIODevice::WriteOnly));
+    QCOMPARE(firmwareFile.write(brokenHex), qint64(brokenHex.size()));
+    firmwareFile.close();
+
+    const QString workflowPath = directory.filePath(QStringLiteral("workflow.json"));
+    QJsonArray steps;
+    steps.append(QJsonObject{{QStringLiteral("op"), QStringLiteral("device.ensureUuid")}});
+    steps.append(QJsonObject{{QStringLiteral("op"), QStringLiteral("flash.prepare")}});
+    steps.append(QJsonObject{{QStringLiteral("op"), QStringLiteral("flash.validateArtifact")}});
+    steps.append(QJsonObject{{QStringLiteral("op"), QStringLiteral("device.reset")}});
+    QJsonObject workflow{{QStringLiteral("id"), QStringLiteral("test.invalid-hex")},
+        {QStringLiteral("steps"), steps}};
+    QJsonObject root{{QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("workflows"), QJsonArray{workflow}}};
+    QFile workflowFile(workflowPath);
+    QVERIFY(workflowFile.open(QIODevice::WriteOnly));
+    QVERIFY(workflowFile.write(QJsonDocument(root).toJson()) > 0);
+    workflowFile.close();
+
+    FirmwareArtifact artifact;
+    artifact.target = QStringLiteral("application");
+    artifact.relativePath = firmwarePath;
+    artifact.sha256 = sha256Hex(brokenHex);
+    artifact.format = QStringLiteral("intelHex");
+    DeviceIdentity identity;
+    identity.type = 0x0A02;
+    identity.endpoint = QStringLiteral("192.0.2.1:2001");
+    identity.firmwareArtifacts = {artifact};
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    DeviceFactory factory(transport);
+    const auto device = factory.create(identity);
+    WorkflowRepository workflows;
+    QString error;
+    QVERIFY2(workflows.load(workflowPath, &error), qPrintable(error));
+    ActionSpec action;
+    action.id = QStringLiteral("flash.application.write");
+    action.workflow = QStringLiteral("test.invalid-hex");
+    action.target = QStringLiteral("application");
+    WorkflowRunner runner(&workflows);
+    QVERIFY(!runner.run(action, {device}));
+    QCOMPARE(runner.lastError().code, QStringLiteral("FIRMWARE_PREFLIGHT_FAILED"));
+    QCOMPARE(transport->resetCalls, 0);
+    QCOMPARE(transport->flashWrites.size(), 0);
+
+    QVERIFY(firmwareFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(firmwareFile.write(":00000001FF\n") > 0);
+    firmwareFile.close();
+    QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
+    QVERIFY(!runner.run(action, {device}));
+    QCOMPARE(transport->resetCalls, 0);
+    QVERIFY(std::any_of(logSpy.cbegin(), logSpy.cend(), [](const QList<QVariant>& row) {
+        return !row.isEmpty() && row.first().toString().contains(QStringLiteral("hash mismatch"));
+    }));
+}
+
+void DeviceWorkbenchTest::changedUuidStopsBeforeDeviceReset()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString workflowPath = directory.filePath(QStringLiteral("workflow.json"));
+    const QJsonObject workflow{{QStringLiteral("id"), QStringLiteral("test.uuid-change")},
+        {QStringLiteral("steps"), QJsonArray{
+            QJsonObject{{QStringLiteral("op"), QStringLiteral("device.ensureUuid")}},
+            QJsonObject{
+            {QStringLiteral("op"), QStringLiteral("device.reset")}}}}};
+    QFile workflowFile(workflowPath);
+    QVERIFY(workflowFile.open(QIODevice::WriteOnly));
+    QVERIFY(workflowFile.write(QJsonDocument(QJsonObject{
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("workflows"), QJsonArray{workflow}}}).toJson()) > 0);
+    workflowFile.close();
+
+    DeviceIdentity identity;
+    identity.type = 0x0A02;
+    identity.endpoint = QStringLiteral("192.0.2.1:2001");
+    identity.uuid = QStringLiteral("EXPECTED-UUID");
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    transport->uuidOverride = QStringLiteral("DIFFERENT-UUID");
+    DeviceFactory factory(transport);
+    WorkflowRepository workflows;
+    QString error;
+    QVERIFY2(workflows.load(workflowPath, &error), qPrintable(error));
+    ActionSpec action;
+    action.id = QStringLiteral("test.uuid-change");
+    action.workflow = action.id;
+    WorkflowRunner runner(&workflows);
+    QVERIFY(!runner.run(action, {factory.create(identity)}));
+    QCOMPARE(runner.lastError().code, QStringLiteral("IDENTITY_UUID_MISMATCH"));
+    QCOMPARE(transport->uuidReadCalls, 1);
+    QCOMPARE(transport->resetCalls, 0);
+}
+
 void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
 {
     CatalogService catalog;
@@ -1524,7 +1732,7 @@ void DeviceWorkbenchTest::workflowLoadsConfiguredBocV6Firmware()
     QCOMPARE(deviceObject->identity().currentFirmwareId, QStringLiteral("sw-2026-08-31-10-01-24"));
     QCOMPARE(deviceObject->identity().state, QStringLiteral("application"));
     QCOMPARE(deviceObject->identity().uuid, transport->uuidValue);
-    QCOMPARE(transport->uuidReadCalls, 1);
+    QCOMPARE(transport->uuidReadCalls, 2);
 }
 
 void DeviceWorkbenchTest::workflowRejectsBootloaderWithDifferentUuid()
@@ -1853,6 +2061,234 @@ void DeviceWorkbenchTest::pingActionIsAvailableForUnknownDevices()
         QVERIFY2(action.id != QStringLiteral("device.ping"), "Unknown-device ping must stay unavailable in bulk actions");
 }
 
+void DeviceWorkbenchTest::profileSnapshotSurvivesCatalogReload()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("catalog.json"));
+    const auto writeCatalog = [&path](int registerNumber) {
+        QJsonObject entry{
+            {QStringLiteral("id"), QStringLiteral("test.device")},
+            {QStringLiteral("protocol"), QStringLiteral("unicorn-ascii")},
+            {QStringLiteral("type"), QStringLiteral("0x0B01")},
+            {QStringLiteral("name"), QStringLiteral("Test device")},
+            {QStringLiteral("descriptionKeywords"), QJsonArray{QStringLiteral("Test device")}},
+            {QStringLiteral("operationParameters"), QJsonObject{
+                {QStringLiteral("applicationLoadRegister"), registerNumber}}},
+            {QStringLiteral("capabilities"), QJsonArray{QStringLiteral("device.application.load")}}
+        };
+        QJsonObject root{
+            {QStringLiteral("schemaVersion"), 4},
+            {QStringLiteral("devices"), QJsonArray{entry}}
+        };
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        return file.write(QJsonDocument(root).toJson()) > 0;
+    };
+
+    QVERIFY(writeCatalog(4));
+    CatalogService catalog;
+    QString error;
+    QVERIFY2(catalog.load(path, &error), qPrintable(error));
+    DeviceIdentity identity;
+    identity.type = 0x0B01;
+    identity.endpoint = QStringLiteral("192.0.2.1:2001");
+    identity = catalog.enrich(identity);
+    auto originalProfile = catalog.profileForDevice(identity);
+    QVERIFY(originalProfile);
+    QCOMPARE(originalProfile->id, QStringLiteral("test.device"));
+    QCOMPARE(originalProfile->applicationLoadRegister, 4);
+
+    auto transport = std::make_shared<FakeDeviceTransport>();
+    DeviceFactory factory(transport);
+    auto existing = factory.create(identity, originalProfile);
+    QCOMPARE(existing->physicalKey(), QStringLiteral("endpoint:||192.0.2.1:2001"));
+    ActionRepository actions;
+    QVERIFY2(actions.load(sourceConfigPath(QStringLiteral("config/actions.json")), &error),
+        qPrintable(error));
+    DeviceIdentity withoutCopiedCapabilities = existing->identity();
+    withoutCopiedCapabilities.capabilities.clear();
+    withoutCopiedCapabilities.state = QStringLiteral("bootloader");
+    existing->updateIdentity(withoutCopiedCapabilities);
+    bool loadAvailableFromProfile = false;
+    for (const ActionSpec& action : actions.actionsForDevice(*existing))
+        loadAvailableFromProfile |= action.id == QStringLiteral("device.application.load");
+    QVERIFY(loadAvailableFromProfile);
+
+    QVERIFY(writeCatalog(5));
+    QVERIFY2(catalog.load(path, &error), qPrintable(error));
+    auto updatedProfile = catalog.profileForDevice(identity);
+    QVERIFY(updatedProfile);
+    QCOMPARE(updatedProfile->applicationLoadRegister, 5);
+    QCOMPARE(existing->profile()->applicationLoadRegister, 4);
+    QVERIFY(existing->disableLoadApplication(&error));
+    QCOMPARE(transport->writes.last().index, quint16(4));
+
+    auto newer = factory.create(catalog.enrich(identity), updatedProfile);
+    QVERIFY(newer->disableLoadApplication(&error));
+    QCOMPARE(transport->writes.last().index, quint16(5));
+    DeviceIdentity withUuid = newer->identity();
+    withUuid.uuid = QStringLiteral("AA-BB");
+    newer->updateIdentity(withUuid);
+    QCOMPARE(newer->physicalKey(), QStringLiteral("uuid:aa-bb"));
+}
+
+void DeviceWorkbenchTest::actionRepositoryRejectsUnsupportedSchemaWithoutReplacingActions()
+{
+    ActionRepository actions;
+    QString error;
+    QVERIFY2(actions.load(sourceConfigPath(QStringLiteral("config/actions.json")), &error),
+        qPrintable(error));
+    DeviceIdentity unknown;
+    const int originalCount = actions.actionsForDevice(unknown).size();
+    QVERIFY(originalCount > 0);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("actions.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QJsonObject root{
+        {QStringLiteral("schemaVersion"), 2},
+        {QStringLiteral("actions"), QJsonArray{}}
+    };
+    QVERIFY(file.write(QJsonDocument(root).toJson()) > 0);
+    file.close();
+    QVERIFY(!actions.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_INVALID_SCHEMA")));
+    QCOMPARE(actions.actionsForDevice(unknown).size(), originalCount);
+}
+
+void DeviceWorkbenchTest::workflowReloadKeepsActiveSnapshot()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("workflows.json"));
+    const auto writeWorkflow = [&path](const QString& op, const QJsonObject& extra = {},
+        int schemaVersion = 1) {
+        QJsonObject step = extra;
+        step.insert(QStringLiteral("op"), op);
+        QJsonArray steps;
+        if (op == QStringLiteral("device.reset") || op == QStringLiteral("firmware.flash"))
+            steps.append(QJsonObject{{QStringLiteral("op"), QStringLiteral("device.ensureUuid")}});
+        steps.append(step);
+        QJsonObject root{{QStringLiteral("schemaVersion"), schemaVersion},
+            {QStringLiteral("workflows"), QJsonArray{
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("test.workflow")},
+                {QStringLiteral("steps"), steps}}}}};
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        return file.write(QJsonDocument(root).toJson()) > 0;
+    };
+
+    WorkflowRepository repository;
+    QString error;
+    QVERIFY(writeWorkflow(QStringLiteral("log")));
+    QVERIFY2(repository.load(path, &error), qPrintable(error));
+    const auto running = repository.snapshotForId(QStringLiteral("test.workflow"));
+    QVERIFY(running);
+    QVERIFY(!running->version.isEmpty());
+    QCOMPARE(running->steps.first().op, QStringLiteral("log"));
+
+    QVERIFY(writeWorkflow(QStringLiteral("device.reset")));
+    QVERIFY2(repository.load(path, &error), qPrintable(error));
+    QCOMPARE(running->steps.first().op, QStringLiteral("log"));
+    QCOMPARE(repository.snapshotForId(QStringLiteral("test.workflow"))->steps.last().op,
+        QStringLiteral("device.reset"));
+    QVERIFY(repository.snapshotForId(QStringLiteral("test.workflow"))->version != running->version);
+
+    QVERIFY(writeWorkflow(QStringLiteral("log"), {}, 2));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_INVALID_SCHEMA")));
+    QCOMPARE(repository.snapshotForId(QStringLiteral("test.workflow"))->steps.last().op,
+        QStringLiteral("device.reset"));
+
+    QVERIFY(writeWorkflow(QStringLiteral("unknown.operation")));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_UNKNOWN_OPERATION")));
+    QCOMPARE(repository.snapshotForId(QStringLiteral("test.workflow"))->steps.last().op,
+        QStringLiteral("device.reset"));
+
+    QVERIFY(writeWorkflow(QStringLiteral("sleep"),
+        {{QStringLiteral("ms"), QStringLiteral("invalid")}}));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("Invalid argument")));
+
+    QVERIFY(writeWorkflow(QStringLiteral("sleep"),
+        {{QStringLiteral("ms"), QStringLiteral("100")}}));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("Invalid argument")));
+
+    QVERIFY(writeWorkflow(QStringLiteral("device.loadApplication")));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_UNSAFE_WORKFLOW")));
+    QCOMPARE(repository.snapshotForId(QStringLiteral("test.workflow"))->steps.last().op,
+        QStringLiteral("device.reset"));
+
+    QVERIFY(writeWorkflow(QStringLiteral("firmware.flash")));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_UNSAFE_FLASH_WORKFLOW")));
+    QCOMPARE(repository.snapshotForId(QStringLiteral("test.workflow"))->steps.last().op,
+        QStringLiteral("device.reset"));
+}
+
+void DeviceWorkbenchTest::executionJournalRecoversInterruptedDevice()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    ExecutionJournal journal(directory.filePath(QStringLiteral("execution.jsonl")));
+    QString error;
+    const QJsonObject running{
+        {QStringLiteral("jobId"), QStringLiteral("job-1")},
+        {QStringLiteral("executionId"), QStringLiteral("device-1")},
+        {QStringLiteral("uuid"), QStringLiteral("UUID-1")},
+        {QStringLiteral("workflowVersion"), QStringLiteral("version-1")},
+        {QStringLiteral("operationId"), QStringLiteral("firmware.flash")},
+        {QStringLiteral("completedOperationId"), QStringLiteral("flash.buildPagePlan")},
+        {QStringLiteral("flashMayHaveStarted"), true},
+        {QStringLiteral("event"), QStringLiteral("stage")},
+        {QStringLiteral("factorySettingsKey"), QStringLiteral("DO-NOT-STORE")},
+        {QStringLiteral("firmwareBytes"), QStringLiteral("DO-NOT-STORE")}
+    };
+    QVERIFY2(journal.append(running, &error), qPrintable(error));
+    QJsonObject finished = running;
+    finished.insert(QStringLiteral("executionId"), QStringLiteral("device-2"));
+    finished.insert(QStringLiteral("event"), QStringLiteral("succeeded"));
+    QVERIFY2(journal.append(finished, &error), qPrintable(error));
+    QJsonObject completedStep = running;
+    completedStep.insert(QStringLiteral("executionId"), QStringLiteral("device-3"));
+    completedStep.insert(QStringLiteral("operationId"), QStringLiteral("firmware.verify"));
+    completedStep.insert(QStringLiteral("completedOperationId"), QStringLiteral("firmware.verify"));
+    completedStep.insert(QStringLiteral("event"), QStringLiteral("stepCompleted"));
+    QVERIFY2(journal.append(completedStep, &error), qPrintable(error));
+
+    QFile tornLine(journal.filePath());
+    QVERIFY(tornLine.open(QIODevice::WriteOnly | QIODevice::Append));
+    QVERIFY(tornLine.write("{\"incomplete\":", 14) > 0);
+    tornLine.close();
+
+    const QVector<QJsonObject> recovered = journal.recoverInterrupted(&error);
+    QCOMPARE(recovered.size(), 2);
+    QCOMPARE(recovered.first().value(QStringLiteral("executionId")).toString(),
+        QStringLiteral("device-1"));
+    QCOMPARE(recovered.first().value(QStringLiteral("operationId")).toString(),
+        QStringLiteral("firmware.flash"));
+    QCOMPARE(recovered.first().value(QStringLiteral("completedOperationId")).toString(),
+        QStringLiteral("flash.buildPagePlan"));
+    QCOMPARE(recovered.first().value(QStringLiteral("inFlightOperationId")).toString(),
+        QStringLiteral("firmware.flash"));
+    QVERIFY(recovered.first().value(QStringLiteral("flashMayHaveStarted")).toBool());
+    QCOMPARE(recovered.last().value(QStringLiteral("executionId")).toString(),
+        QStringLiteral("device-3"));
+    QVERIFY(recovered.last().value(QStringLiteral("inFlightOperationId")).toString().isEmpty());
+    QVERIFY(journal.recoverInterrupted(&error).isEmpty());
+    QFile journalFile(journal.filePath());
+    QVERIFY(journalFile.open(QIODevice::ReadOnly));
+    QVERIFY(!journalFile.readAll().contains("DO-NOT-STORE"));
+}
+
 void DeviceWorkbenchTest::deviceBaseWritesConfiguredServiceRegisters()
 {
     DeviceIdentity identity;
@@ -1883,7 +2319,6 @@ void DeviceWorkbenchTest::deviceReadIntDelegatesToTransport()
     identity.version = 0x0001;
     identity.known = true;
     identity.catalogId = QStringLiteral("boc.v12");
-    identity.deviceClass = QStringLiteral("BocV12Device");
     identity.modbusAddress = 7;
     identity.endpoint = QStringLiteral("192.168.1.245:2001");
 

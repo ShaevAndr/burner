@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "app_edition.h"
 #include "firmware_access_policy.h"
+#include "execution_journal.h"
 #include "workers.h"
 
 #include <QCheckBox>
@@ -16,9 +17,11 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
+#include <QJsonObject>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListView>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QProgressBar>
@@ -28,55 +31,21 @@
 #include <QStandardPaths>
 #include <QThread>
 #include <QTextStream>
-#include <QStackedWidget>
-#include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 enum DiscoveryColumns
 {
-    DiscoveryDevice = 0,
+    DiscoveryCheck = 0,
+    DiscoveryDevice,
     DiscoveryNumber,
     DiscoveryAddress,
     DiscoveryChannel,
+    DiscoveryFirmware,
     DiscoveryState,
-    DiscoveryPing,
+    DiscoveryActions,
     DiscoveryColumnCount
-};
-
-enum FirmwareColumns
-{
-    FirmwareCheck = 0,
-    FirmwareActions,
-    FirmwareDevice,
-    FirmwareNumber,
-    FirmwareAddress,
-    FirmwareChannel,
-    FirmwareCurrent,
-    FirmwareState,
-    FirmwareColumnCount
-};
-
-enum DeviceActionColumns
-{
-    DeviceActionCheck = 0,
-    DeviceActionActions,
-    DeviceActionDevice,
-    DeviceActionNumber,
-    DeviceActionAddress,
-    DeviceActionChannel,
-    DeviceActionCurrent,
-    DeviceActionState,
-    DeviceActionColumnCount
-};
-
-enum MainPages
-{
-    DiscoveryPage = 0,
-    FirmwarePage,
-    BootloaderPage,
-    ProductionDatePage,
-    SerialNumberPage
 };
 
 static void configureCombo(QComboBox* combo)
@@ -91,50 +60,6 @@ static bool isFlashAction(const QString& actionId)
     return actionId.startsWith(QStringLiteral("flash."));
 }
 
-static QWidget* tableButtonCell(QPushButton* first, QPushButton* second = nullptr)
-{
-    QWidget* cell = new QWidget;
-    QHBoxLayout* layout = new QHBoxLayout(cell);
-    layout->setContentsMargins(5, 4, 5, 4);
-    layout->setSpacing(5);
-    layout->addWidget(first);
-    if (second)
-        layout->addWidget(second);
-    layout->addStretch();
-    return cell;
-}
-
-static void configureDeviceActionTable(QTableWidget* table, bool showCheckboxes)
-{
-    table->setHorizontalHeaderLabels({
-        QString(), QString(), QStringLiteral("Device"), QStringLiteral("Number"),
-        QStringLiteral("Address"), QStringLiteral("Channel"), QStringLiteral("Firmware"),
-        QStringLiteral("State")
-    });
-    table->verticalHeader()->setVisible(false);
-    table->verticalHeader()->setMinimumSectionSize(54);
-    table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table->setSelectionMode(QAbstractItemView::NoSelection);
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table->setAlternatingRowColors(true);
-    table->setWordWrap(true);
-    QHeaderView* header = table->horizontalHeader();
-    header->setSectionResizeMode(QHeaderView::Interactive);
-    header->setStretchLastSection(false);
-    header->setMinimumSectionSize(42);
-    table->setColumnWidth(DeviceActionCheck, 42);
-    table->setColumnWidth(DeviceActionActions, 90);
-    table->setColumnWidth(DeviceActionDevice, 420);
-    table->setColumnWidth(DeviceActionNumber, 95);
-    table->setColumnWidth(DeviceActionAddress, 78);
-    table->setColumnWidth(DeviceActionChannel, 180);
-    table->setColumnWidth(DeviceActionCurrent, 205);
-    table->setColumnWidth(DeviceActionState, 95);
-    table->setColumnHidden(DeviceActionCheck, !showCheckboxes);
-    table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-}
-
 static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_ptr<DeviceBase>>& devices, const QString& target)
 {
     QVector<FirmwareArtifact> artifacts;
@@ -142,12 +67,12 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
         return artifacts;
 
     const DeviceIdentity& firstIdentity = devices.first()->identity();
-    if (target == QStringLiteral("application") && !firstIdentity.firmwareVersions.isEmpty())
+    if (target == QStringLiteral("application") && !devices.first()->firmwareVersions().isEmpty())
     {
-        for (const FirmwareVersionSpec& targetFirmware : firstIdentity.firmwareVersions)
+        for (const FirmwareVersionSpec& targetFirmware : devices.first()->firmwareVersions())
         {
             if (targetFirmware.artifact.target != target
-                || !FirmwareAccessPolicy::isTargetAllowed(firstIdentity, targetFirmware.id))
+                || !FirmwareAccessPolicy::isTargetAllowed(*devices.first(), targetFirmware.id))
                 continue;
 
             bool availableForAll = true;
@@ -158,10 +83,9 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
                     availableForAll = false;
                     break;
                 }
-                const DeviceIdentity& identity = device->identity();
-                const FirmwareVersionSpec* deviceTarget = identity.firmwareVersionById(targetFirmware.id);
+                const FirmwareVersionSpec* deviceTarget = device->firmwareVersionById(targetFirmware.id);
                 if (!deviceTarget || deviceTarget->artifact.target != target
-                    || !FirmwareAccessPolicy::isTargetAllowed(identity, targetFirmware.id))
+                    || !FirmwareAccessPolicy::isTargetAllowed(*device, targetFirmware.id))
                 {
                     availableForAll = false;
                     break;
@@ -173,7 +97,7 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
         return artifacts;
     }
 
-    for (const FirmwareArtifact& artifact : firstIdentity.firmwareArtifacts)
+    for (const FirmwareArtifact& artifact : devices.first()->firmwareArtifacts())
     {
         if (artifact.target == target
             && artifact.isAllowedFromFirmware(firstIdentity.currentFirmwareId))
@@ -188,7 +112,7 @@ static QVector<FirmwareArtifact> artifactsForTarget(const QVector<std::shared_pt
             break;
         }
 
-        const QVector<FirmwareArtifact>& otherArtifacts = devices.at(deviceIndex)->identity().firmwareArtifacts;
+        const QVector<FirmwareArtifact>& otherArtifacts = devices.at(deviceIndex)->firmwareArtifacts();
         QVector<FirmwareArtifact> common;
         for (const FirmwareArtifact& candidate : artifacts)
         {
@@ -269,6 +193,27 @@ MainWindow::MainWindow(ServiceContainer* services, QWidget* parent) :
     connect(&mServices->workflow(), &WorkflowRunner::progressChanged, this, &MainWindow::onWorkflowProgress);
 
     appendLog(QStringLiteral("Приложение запущено. Файл журнала: %1").arg(logFilePath()));
+    ExecutionJournal executionJournal;
+    QString recoveryError;
+    const QVector<QJsonObject> interrupted = executionJournal.recoverInterrupted(&recoveryError);
+    if (!recoveryError.isEmpty())
+        appendLog(QStringLiteral("Журнал заданий недоступен: %1").arg(recoveryError));
+    for (const QJsonObject& event : interrupted)
+    {
+        const QString deviceId = event.value(QStringLiteral("uuid")).toString().isEmpty()
+            ? event.value(QStringLiteral("endpoint")).toString()
+            : event.value(QStringLiteral("uuid")).toString();
+        const bool flashMayHaveStarted = event.value(QStringLiteral("flashMayHaveStarted")).toBool();
+        const QString completed = event.value(QStringLiteral("completedOperationId")).toString();
+        const QString inFlight = event.value(QStringLiteral("inFlightOperationId")).toString();
+        appendLog(QStringLiteral("Прерванное задание %1, устройство %2, последний завершённый этап %3, незавершённый этап %4. %5")
+            .arg(event.value(QStringLiteral("jobId")).toString(), deviceId,
+                completed.isEmpty() ? QStringLiteral("нет") : completed,
+                inFlight.isEmpty() ? QStringLiteral("нет") : inFlight,
+                flashMayHaveStarted
+                    ? QStringLiteral("Запись flash могла начаться; проверьте устройство в загрузчике перед повтором.")
+                    : QStringLiteral("Запись flash не начиналась; проверьте состояние устройства перед повтором.")));
+    }
 }
 
 MainWindow::~MainWindow()
@@ -308,64 +253,20 @@ void MainWindow::buildUi()
     setWindowTitle(AppEdition::displayName());
 
     QWidget* root = new QWidget(this);
-    QHBoxLayout* rootLayout = new QHBoxLayout(root);
+    QVBoxLayout* rootLayout = new QVBoxLayout(root);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(0);
-    rootLayout->addWidget(buildSidebar());
-
-    mPages = new QStackedWidget(root);
-    mPages->setObjectName(QStringLiteral("main"));
-    mPages->addWidget(buildDiscoveryPage());
-    mPages->addWidget(buildFirmwarePage());
-    mPages->addWidget(buildBootloaderPage());
-    if (AppEdition::isInternal())
-    {
-        mPages->addWidget(buildProductionDatePage());
-        mPages->addWidget(buildSerialNumberPage());
-    }
-    rootLayout->addWidget(mPages, 1);
-
-    connect(mDiscoveryTabButton, &QPushButton::clicked, this, [this]() {
-        showPage(DiscoveryPage);
-    });
-    connect(mFirmwareTabButton, &QPushButton::clicked, this, [this]() {
-        showPage(FirmwarePage);
-    });
-    connect(mBootloaderTabButton, &QPushButton::clicked, this, [this]() {
-        showPage(BootloaderPage);
-    });
-    if (mProductionDateButton)
-    {
-        connect(mProductionDateButton, &QPushButton::clicked, this, [this]() {
-            showPage(ProductionDatePage);
-        });
-    }
-    if (mSerialNumberButton)
-    {
-        connect(mSerialNumberButton, &QPushButton::clicked, this, [this]() {
-            showPage(SerialNumberPage);
-        });
-    }
-    showPage(DiscoveryPage);
+    rootLayout->addWidget(buildDiscoveryPage());
     setCentralWidget(root);
 
     setStyleSheet(QStringLiteral(R"(
-        QWidget#sidebar { background: #17212b; color: #d9e1e8; }
-        QStackedWidget#main, QWidget#page { background: #f4f6f8; }
-        QLabel#brandTitle { color: white; font-weight: 700; font-size: 15px; }
-        QLabel#brandSub { color: #9fb0bf; font-size: 12px; }
+        QWidget#page { background: #f4f6f8; }
         QLabel#h1 { color: #17212b; font-size: 22px; font-weight: 700; }
         QLabel#subtitle { color: #667584; font-size: 13px; }
         QPushButton { min-height: 34px; border: 1px solid #d8e0e5; border-radius: 7px; padding: 0 12px; background: white; color: #25313f; }
-        QPushButton#primary, QPushButton#nav:checked { background: #2563eb; border-color: #2563eb; color: white; }
+        QPushButton#primary { background: #2563eb; border-color: #2563eb; color: white; }
         QPushButton#primary:disabled { background: #e5e9ed; border-color: #c8d0d8; color: #8a98a6; }
-        QPushButton#nav { background: #17212b; border-color: #334150; color: #d9e1e8; text-align: left; }
-        QPushButton#nav:disabled { background: #202b36; border-color: #2b3743; color: #687785; }
-        QPushButton#tablePing { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; background: #eff6ff; border: 1px solid #2563eb; color: #1d4ed8; }
-        QPushButton#tablePing:hover { background: #dbeafe; }
-        QPushButton#tableFlash { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; background: #2563eb; border: 1px solid #2563eb; color: white; }
-        QPushButton#tableFlash:hover { background: #1d4ed8; border-color: #1d4ed8; }
-        QPushButton#tablePing:disabled, QPushButton#tableFlash:disabled { background: #eef1f4; border-color: #c8d0d8; color: #8a98a6; }
+        QToolButton { min-height: 34px; border: 1px solid #d8e0e5; border-radius: 7px; padding: 0 10px; background: white; color: #25313f; }
+        QToolButton:disabled { background: #e5e9ed; color: #8a98a6; }
         QFrame#band { background: white; border: 1px solid #d8e0e5; border-radius: 8px; }
         QComboBox, QLineEdit { min-height: 34px; border: 1px solid #d8e0e5; border-radius: 7px; padding: 0 8px; background: white; }
         QTableWidget { background: white; border: 0; gridline-color: #d8e0e5; selection-background-color: #edf5ff; selection-color: #17212b; alternate-background-color: #fafcff; }
@@ -375,56 +276,6 @@ void MainWindow::buildUi()
     )"));
 
     updateLineMode();
-}
-
-QWidget* MainWindow::buildSidebar()
-{
-    QWidget* sidebar = new QWidget;
-    sidebar->setObjectName(QStringLiteral("sidebar"));
-    sidebar->setFixedWidth(248);
-    QVBoxLayout* layout = new QVBoxLayout(sidebar);
-    layout->setContentsMargins(16, 20, 16, 20);
-    layout->setSpacing(18);
-
-    QLabel* brandTitle = new QLabel(AppEdition::displayName());
-    brandTitle->setObjectName(QStringLiteral("brandTitle"));
-    QLabel* brandSub = new QLabel(QStringLiteral("UDP / RS-485"));
-    brandSub->setObjectName(QStringLiteral("brandSub"));
-    layout->addWidget(brandTitle);
-    layout->addWidget(brandSub);
-
-    mDiscoveryTabButton = new QPushButton(QStringLiteral("Обнаружение"));
-    mDiscoveryTabButton->setObjectName(QStringLiteral("nav"));
-    mDiscoveryTabButton->setCheckable(true);
-    mFirmwareTabButton = new QPushButton(QStringLiteral("Прошивки"));
-    mFirmwareTabButton->setObjectName(QStringLiteral("nav"));
-    mFirmwareTabButton->setCheckable(true);
-    mBootloaderTabButton = new QPushButton(QStringLiteral("Прошивка bootloader"));
-    mBootloaderTabButton->setObjectName(QStringLiteral("nav"));
-    mBootloaderTabButton->setCheckable(true);
-    layout->addWidget(mDiscoveryTabButton);
-    layout->addWidget(mFirmwareTabButton);
-    layout->addWidget(mBootloaderTabButton);
-
-    if (AppEdition::isInternal())
-    {
-        QLabel* actionsLabel = new QLabel(QStringLiteral("Действия с устройствами"));
-        actionsLabel->setObjectName(QStringLiteral("brandSub"));
-        layout->addWidget(actionsLabel);
-        mProductionDateButton = new QPushButton(QStringLiteral("Смена даты производства"));
-        mProductionDateButton->setObjectName(QStringLiteral("nav"));
-        mProductionDateButton->setCheckable(true);
-        mProductionDateButton->setToolTip(QStringLiteral("Открыть таблицу смены даты производства"));
-        mSerialNumberButton = new QPushButton(QStringLiteral("Смена номера устройства"));
-        mSerialNumberButton->setObjectName(QStringLiteral("nav"));
-        mSerialNumberButton->setCheckable(true);
-        mSerialNumberButton->setToolTip(QStringLiteral("Открыть таблицу индивидуальной смены номера"));
-        layout->addWidget(mProductionDateButton);
-        layout->addWidget(mSerialNumberButton);
-    }
-    layout->addStretch();
-    updateNavigationActions();
-    return sidebar;
 }
 
 QWidget* MainWindow::buildDiscoveryPage()
@@ -442,33 +293,14 @@ QWidget* MainWindow::buildDiscoveryPage()
     layout->addWidget(h1);
     layout->addWidget(subtitle);
     layout->addWidget(buildDiscoveryPanel());
-    layout->addWidget(buildDiscoveryTablePanel(), 1);
-    return page;
-}
-
-QWidget* MainWindow::buildFirmwarePage()
-{
-    QWidget* page = new QWidget;
-    page->setObjectName(QStringLiteral("page"));
-    QVBoxLayout* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(22, 16, 22, 18);
-    layout->setSpacing(14);
-
-    QHBoxLayout* header = new QHBoxLayout;
-    QVBoxLayout* title = new QVBoxLayout;
-    QLabel* h1 = new QLabel(QStringLiteral("Прошивки"));
-    h1->setObjectName(QStringLiteral("h1"));
-    QLabel* subtitle = new QLabel(QStringLiteral("Прошивка отдельных устройств или группы по общим доступным переходам."));
-    subtitle->setObjectName(QStringLiteral("subtitle"));
-    title->addWidget(h1);
-    title->addWidget(subtitle);
-    header->addLayout(title);
-    header->addStretch();
-
-    header->addWidget(buildWorkflowProgressPanel());
-    layout->addLayout(header);
-    layout->addWidget(buildFirmwareTablePanel(), 3);
-    layout->addWidget(buildLogsPanel(), 2);
+    layout->addWidget(buildWorkflowProgressPanel());
+    QSplitter* content = new QSplitter(Qt::Vertical);
+    content->addWidget(buildDiscoveryTablePanel());
+    content->addWidget(buildLogsPanel());
+    content->setStretchFactor(0, 3);
+    content->setStretchFactor(1, 2);
+    content->setSizes({420, 220});
+    layout->addWidget(content, 1);
     return page;
 }
 
@@ -506,67 +338,6 @@ QWidget* MainWindow::buildLogsPanel()
     return logs;
 }
 
-QWidget* MainWindow::buildBootloaderPage()
-{
-    QWidget* page = new QWidget;
-    page->setObjectName(QStringLiteral("page"));
-    QVBoxLayout* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(22, 16, 22, 18);
-    layout->setSpacing(14);
-
-    QLabel* h1 = new QLabel(QStringLiteral("Прошивка bootloader"));
-    h1->setObjectName(QStringLiteral("h1"));
-    QLabel* subtitle = new QLabel(QStringLiteral(
-        "Bootloader записывается напрямую из основного приложения и проверяется чтением flash."));
-    subtitle->setObjectName(QStringLiteral("subtitle"));
-    layout->addWidget(h1);
-    layout->addWidget(subtitle);
-    layout->addWidget(buildWorkflowProgressPanel());
-    layout->addWidget(buildBootloaderTablePanel(), 3);
-    layout->addWidget(buildLogsPanel(), 2);
-    return page;
-}
-
-QWidget* MainWindow::buildProductionDatePage()
-{
-    QWidget* page = new QWidget;
-    page->setObjectName(QStringLiteral("page"));
-    QVBoxLayout* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(22, 16, 22, 18);
-    layout->setSpacing(14);
-
-    QLabel* h1 = new QLabel(QStringLiteral("Смена даты производства"));
-    h1->setObjectName(QStringLiteral("h1"));
-    QLabel* subtitle = new QLabel(QStringLiteral(
-        "Измените дату у одного устройства или отметьте несколько устройств для групповой операции."));
-    subtitle->setObjectName(QStringLiteral("subtitle"));
-    layout->addWidget(h1);
-    layout->addWidget(subtitle);
-    layout->addWidget(buildWorkflowProgressPanel());
-    layout->addWidget(buildProductionDateTablePanel(), 1);
-    return page;
-}
-
-QWidget* MainWindow::buildSerialNumberPage()
-{
-    QWidget* page = new QWidget;
-    page->setObjectName(QStringLiteral("page"));
-    QVBoxLayout* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(22, 16, 22, 18);
-    layout->setSpacing(14);
-
-    QLabel* h1 = new QLabel(QStringLiteral("Смена номера устройства"));
-    h1->setObjectName(QStringLiteral("h1"));
-    QLabel* subtitle = new QLabel(QStringLiteral(
-        "Номер изменяется только индивидуально — выберите действие в строке нужного устройства."));
-    subtitle->setObjectName(QStringLiteral("subtitle"));
-    layout->addWidget(h1);
-    layout->addWidget(subtitle);
-    layout->addWidget(buildWorkflowProgressPanel());
-    layout->addWidget(buildSerialNumberTablePanel(), 1);
-    return page;
-}
-
 QWidget* MainWindow::buildWorkflowProgressPanel()
 {
     QWidget* panel = new QWidget;
@@ -586,11 +357,22 @@ QWidget* MainWindow::buildWorkflowProgressPanel()
     layout->addStretch();
     layout->addWidget(stage);
     layout->addWidget(progress);
+    QPushButton* cancel = new QPushButton(QStringLiteral("Отмена"));
+    cancel->setEnabled(false);
+    connect(cancel, &QPushButton::clicked, this, [this]() {
+        if (!mWorkflowCancelToken || mWorkflowCancelToken->exchange(true))
+            return;
+        appendLog(QStringLiteral("Запрошена отмена операции; выполнение остановится на безопасной границе."));
+        for (QPushButton* button : mWorkflowCancelButtons)
+            button->setEnabled(false);
+    });
+    layout->addWidget(cancel);
 
     panel->setVisible(false);
     mWorkflowProgressPanels.append(panel);
     mWorkflowStageLabels.append(stage);
     mWorkflowProgressBars.append(progress);
+    mWorkflowCancelButtons.append(cancel);
     return panel;
 }
 
@@ -605,7 +387,7 @@ QWidget* MainWindow::buildDiscoveryPanel()
     const auto addFieldRow = [](QVBoxLayout* parent, const QString& text, QWidget* field) {
         QHBoxLayout* row = new QHBoxLayout;
         QLabel* label = new QLabel(text);
-        label->setFixedWidth(160);
+        label->setFixedWidth(190);
         field->setFixedWidth(420);
         row->addWidget(label);
         row->addWidget(field);
@@ -657,7 +439,7 @@ QWidget* MainWindow::buildDiscoveryPanel()
     mSearchButton->setObjectName(QStringLiteral("primary"));
     QHBoxLayout* buttonRow = new QHBoxLayout;
     QLabel* buttonSpacer = new QLabel;
-    buttonSpacer->setFixedWidth(160);
+    buttonSpacer->setFixedWidth(190);
     buttonRow->addWidget(buttonSpacer);
     buttonRow->addWidget(mSearchButton, 0, Qt::AlignLeft);
     buttonRow->addStretch();
@@ -680,6 +462,13 @@ QWidget* MainWindow::buildDiscoveryTablePanel()
     QHBoxLayout* filterLayout = new QHBoxLayout(filter);
     filterLayout->setContentsMargins(14, 12, 14, 12);
     filterLayout->addWidget(new QLabel(QStringLiteral("<b>Устройства текущего поиска</b>")));
+    mBulkActionsButton = new QToolButton;
+    mBulkActionsButton->setObjectName(QStringLiteral("bulkActions"));
+    mBulkActionsButton->setText(QStringLiteral("Действия с выбранными"));
+    mBulkActionsButton->setPopupMode(QToolButton::InstantPopup);
+    mBulkActionsButton->setMenu(new QMenu(mBulkActionsButton));
+    mBulkActionsButton->setEnabled(false);
+    filterLayout->addWidget(mBulkActionsButton);
     filterLayout->addStretch();
     mDeviceDataProgressLabel = new QLabel(QStringLiteral("Получение данных"));
     mDeviceDataProgressLabel->setObjectName(QStringLiteral("subtitle"));
@@ -697,14 +486,17 @@ QWidget* MainWindow::buildDiscoveryTablePanel()
     layout->addWidget(filter);
 
     mDiscoveryTable = new QTableWidget(0, DiscoveryColumnCount);
+    mDiscoveryTable->setObjectName(QStringLiteral("deviceTable"));
     mDiscoveryTable->setHorizontalHeaderLabels({
-        QStringLiteral("Device"), QStringLiteral("Number"), QStringLiteral("Address"),
-        QStringLiteral("Channel"), QStringLiteral("State"), QStringLiteral("Actions")
+        QString(), QStringLiteral("Устройство"), QStringLiteral("Номер"),
+        QStringLiteral("Адрес"), QStringLiteral("Подключение"),
+        QStringLiteral("Прошивка"), QStringLiteral("Состояние"), QStringLiteral("Действия")
     });
     mDiscoveryTable->verticalHeader()->setVisible(false);
     mDiscoveryTable->verticalHeader()->setMinimumSectionSize(54);
     mDiscoveryTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     mDiscoveryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mDiscoveryTable->setSelectionMode(QAbstractItemView::NoSelection);
     mDiscoveryTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mDiscoveryTable->setAlternatingRowColors(true);
     mDiscoveryTable->setWordWrap(true);
@@ -712,169 +504,20 @@ QWidget* MainWindow::buildDiscoveryTablePanel()
     header->setSectionResizeMode(QHeaderView::Interactive);
     header->setStretchLastSection(false);
     header->setMinimumSectionSize(48);
-    mDiscoveryTable->setColumnWidth(DiscoveryDevice, 440);
-    mDiscoveryTable->setColumnWidth(DiscoveryNumber, 105);
-    mDiscoveryTable->setColumnWidth(DiscoveryAddress, 85);
-    mDiscoveryTable->setColumnWidth(DiscoveryChannel, 220);
-    mDiscoveryTable->setColumnWidth(DiscoveryState, 105);
-    mDiscoveryTable->setColumnWidth(DiscoveryPing, 90);
+    mDiscoveryTable->setColumnWidth(DiscoveryCheck, 42);
+    header->setSectionResizeMode(DiscoveryDevice, QHeaderView::Stretch);
+    mDiscoveryTable->setColumnWidth(DiscoveryNumber, 95);
+    mDiscoveryTable->setColumnWidth(DiscoveryAddress, 78);
+    mDiscoveryTable->setColumnWidth(DiscoveryChannel, 180);
+    mDiscoveryTable->setColumnWidth(DiscoveryFirmware, 180);
+    mDiscoveryTable->setColumnWidth(DiscoveryState, 120);
+    mDiscoveryTable->setColumnWidth(DiscoveryActions, 140);
     mDiscoveryTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     connect(header, &QHeaderView::sectionResized, mDiscoveryTable, [this]() {
         mDiscoveryTable->resizeRowsToContents();
     });
+    connect(mDiscoveryTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
     layout->addWidget(mDiscoveryTable, 1);
-    return frame;
-}
-
-QWidget* MainWindow::buildFirmwareTablePanel()
-{
-    QFrame* frame = new QFrame;
-    frame->setObjectName(QStringLiteral("band"));
-    QVBoxLayout* layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    QWidget* toolbar = new QWidget;
-    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(14, 12, 14, 12);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Все обнаруженные устройства</b>")));
-    toolbarLayout->addStretch();
-    mBulkFlashButton = new QPushButton(QStringLiteral("Прошить выбранные"));
-    mBulkFlashButton->setObjectName(QStringLiteral("primary"));
-    mBulkFlashButton->setAttribute(Qt::WA_AlwaysShowToolTips);
-    toolbarLayout->addWidget(mBulkFlashButton);
-    layout->addWidget(toolbar);
-
-    mFirmwareTable = new QTableWidget(0, FirmwareColumnCount);
-    mFirmwareTable->setHorizontalHeaderLabels({
-        QString(), QString(), QStringLiteral("Device"), QStringLiteral("Number"),
-        QStringLiteral("Address"), QStringLiteral("Channel"), QStringLiteral("Firmware"),
-        QStringLiteral("State")
-    });
-    mFirmwareTable->verticalHeader()->setVisible(false);
-    mFirmwareTable->verticalHeader()->setMinimumSectionSize(54);
-    mFirmwareTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    mFirmwareTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    mFirmwareTable->setSelectionMode(QAbstractItemView::NoSelection);
-    mFirmwareTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    mFirmwareTable->setAlternatingRowColors(true);
-    mFirmwareTable->setWordWrap(true);
-    QHeaderView* header = mFirmwareTable->horizontalHeader();
-    header->setSectionResizeMode(QHeaderView::Interactive);
-    header->setStretchLastSection(false);
-    header->setMinimumSectionSize(42);
-    mFirmwareTable->setColumnWidth(FirmwareCheck, 42);
-    mFirmwareTable->setColumnWidth(FirmwareActions, 90);
-    mFirmwareTable->setColumnWidth(FirmwareDevice, 420);
-    mFirmwareTable->setColumnWidth(FirmwareNumber, 95);
-    mFirmwareTable->setColumnWidth(FirmwareAddress, 78);
-    mFirmwareTable->setColumnWidth(FirmwareChannel, 180);
-    mFirmwareTable->setColumnWidth(FirmwareCurrent, 205);
-    mFirmwareTable->setColumnWidth(FirmwareState, 95);
-    mFirmwareTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    layout->addWidget(mFirmwareTable, 1);
-
-    connect(mFirmwareTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
-    connect(header, &QHeaderView::sectionResized, mFirmwareTable, [this]() {
-        mFirmwareTable->resizeRowsToContents();
-    });
-    connect(mBulkFlashButton, &QPushButton::clicked, this, [this]() {
-        const QVector<std::shared_ptr<DeviceBase>> selected = selectedDevices();
-        if (!selected.isEmpty())
-            executeAction(actionById(QStringLiteral("flash.application.write")), selected);
-    });
-    return frame;
-}
-
-QWidget* MainWindow::buildBootloaderTablePanel()
-{
-    QFrame* frame = new QFrame;
-    frame->setObjectName(QStringLiteral("band"));
-    QVBoxLayout* layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    QWidget* toolbar = new QWidget;
-    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(14, 12, 14, 12);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Устройства в основном приложении</b>")));
-    toolbarLayout->addStretch();
-    mBulkBootloaderButton = new QPushButton(QStringLiteral("Прошить bootloader выбранным"));
-    mBulkBootloaderButton->setObjectName(QStringLiteral("primary"));
-    mBulkBootloaderButton->setAttribute(Qt::WA_AlwaysShowToolTips);
-    toolbarLayout->addWidget(mBulkBootloaderButton);
-    layout->addWidget(toolbar);
-
-    mBootloaderTable = new QTableWidget(0, DeviceActionColumnCount);
-    configureDeviceActionTable(mBootloaderTable, true);
-    layout->addWidget(mBootloaderTable, 1);
-
-    connect(mBootloaderTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
-    connect(mBootloaderTable->horizontalHeader(), &QHeaderView::sectionResized,
-        mBootloaderTable, [this]() {
-            mBootloaderTable->resizeRowsToContents();
-        });
-    connect(mBulkBootloaderButton, &QPushButton::clicked,
-        this, &MainWindow::runBootloaderUpdate);
-    return frame;
-}
-
-QWidget* MainWindow::buildProductionDateTablePanel()
-{
-    QFrame* frame = new QFrame;
-    frame->setObjectName(QStringLiteral("band"));
-    QVBoxLayout* layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    QWidget* toolbar = new QWidget;
-    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(14, 12, 14, 12);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Все обнаруженные устройства</b>")));
-    toolbarLayout->addStretch();
-    mBulkProductionDateButton = new QPushButton(QStringLiteral("Изменить дату выбранным"));
-    mBulkProductionDateButton->setObjectName(QStringLiteral("primary"));
-    mBulkProductionDateButton->setAttribute(Qt::WA_AlwaysShowToolTips);
-    toolbarLayout->addWidget(mBulkProductionDateButton);
-    layout->addWidget(toolbar);
-
-    mProductionDateTable = new QTableWidget(0, DeviceActionColumnCount);
-    configureDeviceActionTable(mProductionDateTable, true);
-    layout->addWidget(mProductionDateTable, 1);
-
-    connect(mProductionDateTable, &QTableWidget::itemChanged, this, &MainWindow::updateBulkMenu);
-    connect(mProductionDateTable->horizontalHeader(), &QHeaderView::sectionResized,
-        mProductionDateTable, [this]() {
-            mProductionDateTable->resizeRowsToContents();
-        });
-    connect(mBulkProductionDateButton, &QPushButton::clicked,
-        this, &MainWindow::runProductionDateUpdate);
-    return frame;
-}
-
-QWidget* MainWindow::buildSerialNumberTablePanel()
-{
-    QFrame* frame = new QFrame;
-    frame->setObjectName(QStringLiteral("band"));
-    QVBoxLayout* layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    QWidget* toolbar = new QWidget;
-    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(14, 12, 14, 12);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("<b>Все обнаруженные устройства</b>")));
-    toolbarLayout->addStretch();
-    layout->addWidget(toolbar);
-
-    mSerialNumberTable = new QTableWidget(0, DeviceActionColumnCount);
-    configureDeviceActionTable(mSerialNumberTable, false);
-    layout->addWidget(mSerialNumberTable, 1);
-
-    connect(mSerialNumberTable->horizontalHeader(), &QHeaderView::sectionResized,
-        mSerialNumberTable, [this]() {
-            mSerialNumberTable->resizeRowsToContents();
-        });
     return frame;
 }
 
@@ -886,13 +529,6 @@ void MainWindow::startDiscovery()
     mDeviceDataCompleted = 0;
     mDevices.clear();
     mDiscoveryTable->setRowCount(0);
-    mFirmwareTable->setRowCount(0);
-    if (mBootloaderTable)
-        mBootloaderTable->setRowCount(0);
-    if (mProductionDateTable)
-        mProductionDateTable->setRowCount(0);
-    if (mSerialNumberTable)
-        mSerialNumberTable->setRowCount(0);
     updateBulkMenu();
     setBusy(true);
     if (mDeviceDataProgressLabel)
@@ -935,7 +571,8 @@ void MainWindow::startDiscovery()
 void MainWindow::onDeviceFound(DeviceIdentity device)
 {
     device = mServices->catalog().enrich(device);
-    std::shared_ptr<DeviceBase> deviceObject = mDeviceFactory.create(device);
+    std::shared_ptr<DeviceBase> deviceObject = mDeviceFactory.create(
+        device, mServices->catalog().profileForDevice(device));
     if (!deviceObject)
         return;
 
@@ -1003,6 +640,7 @@ void MainWindow::onDeviceDataFinished(quint64 requestId,
     if (!identity.uuid.isEmpty())
         identity.id = identity.uuid;
     pending.device->updateIdentity(identity);
+    pending.device->updateProfile(mServices->catalog().profileForDevice(identity));
     for (const QString& warning : warnings)
         appendLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), warning));
     if (!rawResponse.isEmpty())
@@ -1030,10 +668,8 @@ void MainWindow::mergeDiscoveredDevice(const std::shared_ptr<DeviceBase>& device
         const bool sameEndpoint = existing.endpoint == device.endpoint;
         if (sameUuid || sameEndpoint)
         {
-            if (mDevices.at(i)->className() == deviceObject->className())
-                mDevices.at(i)->updateIdentity(device);
-            else
-                mDevices[i] = deviceObject;
+            mDevices.at(i)->updateIdentity(device);
+            mDevices.at(i)->updateProfile(deviceObject->profile());
             updateDeviceRow(i, mDevices.at(i));
             updateBulkMenu();
             return;
@@ -1104,113 +740,12 @@ void MainWindow::updateLineMode()
 void MainWindow::updateBulkMenu()
 {
     rebuildBulkMenu();
-    rebuildBootloaderBulkAction();
-    rebuildProductionDateBulkAction();
-    updateNavigationActions();
 }
 
-QVector<std::shared_ptr<DeviceBase>> MainWindow::devicesForAction(
-    const QString& actionId,
-    bool includeBusy) const
+bool MainWindow::actionHasArtifact(const ActionSpec& action,
+    const QVector<std::shared_ptr<DeviceBase>>& devices) const
 {
-    QVector<std::shared_ptr<DeviceBase>> devices;
-    for (const std::shared_ptr<DeviceBase>& device : mDevices)
-    {
-        if (!device || (!includeBusy && isDeviceBusy(device)))
-            continue;
-        const QVector<ActionSpec> available = mServices->actions().actionsForDevice(device->identity());
-        bool supported = false;
-        for (const ActionSpec& action : available)
-        {
-            if (action.id == actionId)
-            {
-                supported = true;
-                break;
-            }
-        }
-        if (supported)
-            devices.append(device);
-    }
-    return devices;
-}
-
-void MainWindow::showPage(int pageIndex)
-{
-    if (!mPages || pageIndex < 0 || pageIndex >= mPages->count())
-        return;
-
-    mPages->setCurrentIndex(pageIndex);
-    mDiscoveryTabButton->setChecked(pageIndex == DiscoveryPage);
-    mFirmwareTabButton->setChecked(pageIndex == FirmwarePage);
-    mBootloaderTabButton->setChecked(pageIndex == BootloaderPage);
-    if (mProductionDateButton)
-        mProductionDateButton->setChecked(pageIndex == ProductionDatePage);
-    if (mSerialNumberButton)
-        mSerialNumberButton->setChecked(pageIndex == SerialNumberPage);
-}
-
-void MainWindow::updateNavigationActions()
-{
-    const bool navigationEnabled = !mActionBusy;
-    if (mDiscoveryTabButton)
-        mDiscoveryTabButton->setEnabled(navigationEnabled);
-    if (mFirmwareTabButton)
-        mFirmwareTabButton->setEnabled(navigationEnabled);
-
-    const QVector<std::shared_ptr<DeviceBase>> bootloaderDevices = devicesForAction(
-        QStringLiteral("flash.bootloader.write"));
-    if (mBootloaderTabButton)
-    {
-        mBootloaderTabButton->setEnabled(navigationEnabled);
-        mBootloaderTabButton->setToolTip(bootloaderDevices.isEmpty()
-            ? QStringLiteral("Открыть прошивку bootloader: совместимые устройства пока не найдены")
-            : QStringLiteral("Открыть прошивку bootloader для %1 совместимых устройств")
-                .arg(bootloaderDevices.size()));
-    }
-
-    if (!mProductionDateButton || !mSerialNumberButton)
-        return;
-
-    const QVector<std::shared_ptr<DeviceBase>> dateDevices = devicesForAction(
-        QStringLiteral("device.productionDate.update"));
-    const QVector<std::shared_ptr<DeviceBase>> serialDevices = devicesForAction(
-        QStringLiteral("device.serialNumber.update"));
-    mProductionDateButton->setEnabled(navigationEnabled);
-    mSerialNumberButton->setEnabled(navigationEnabled);
-    mProductionDateButton->setToolTip(dateDevices.isEmpty()
-        ? QStringLiteral("Открыть таблицу смены даты: совместимые устройства пока не найдены")
-        : QStringLiteral("Открыть таблицу смены даты для %1 совместимых устройств")
-            .arg(dateDevices.size()));
-    mSerialNumberButton->setToolTip(serialDevices.isEmpty()
-        ? QStringLiteral("Открыть таблицу смены номера: совместимые устройства пока не найдены")
-        : QStringLiteral("Открыть таблицу индивидуальной смены номера для %1 устройств")
-            .arg(serialDevices.size()));
-}
-
-void MainWindow::runProductionDateUpdate()
-{
-    const QVector<std::shared_ptr<DeviceBase>> devices = selectedProductionDateDevices();
-    if (devices.isEmpty())
-    {
-        QMessageBox::information(this,
-            QStringLiteral("Смена даты производства"),
-            QStringLiteral("Отметьте хотя бы одно доступное устройство в первом столбце."));
-        return;
-    }
-    executeAction(actionById(QStringLiteral("device.productionDate.update")), devices);
-}
-
-void MainWindow::runBootloaderUpdate()
-{
-    const QVector<std::shared_ptr<DeviceBase>> devices = selectedBootloaderDevices();
-    if (devices.isEmpty())
-    {
-        QMessageBox::information(this,
-            QStringLiteral("Прошивка bootloader"),
-            QStringLiteral("Отметьте хотя бы одно доступное устройство в первом столбце."));
-        return;
-    }
-    executeAction(actionById(QStringLiteral("flash.bootloader.write")), devices);
+    return action.target.isEmpty() || !artifactsForTarget(devices, action.target).isEmpty();
 }
 
 void MainWindow::runActionForRow(int row, const QString& actionId)
@@ -1257,7 +792,9 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
     }
 
     QThread* thread = new QThread;
-    WorkflowWorker* worker = new WorkflowWorker(&mServices->workflows(), action, devices, parameters);
+    mWorkflowCancelToken = std::make_shared<std::atomic_bool>(false);
+    WorkflowWorker* worker = new WorkflowWorker(&mServices->workflows(), action, devices,
+        parameters, mWorkflowCancelToken);
     worker->moveToThread(thread);
 
     struct WorkflowResult
@@ -1266,6 +803,7 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
         bool successful = false;
         QString operation;
         QString stage;
+        QHash<int, QString> deviceErrors;
     };
     const auto result = std::make_shared<WorkflowResult>();
 
@@ -1274,6 +812,29 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
     connect(worker, &WorkflowWorker::transportLogMessage, this, &MainWindow::appendTransportLog);
     connect(worker, &WorkflowWorker::progressChanged, this, &MainWindow::onWorkflowProgress);
     connect(worker, &WorkflowWorker::stageChanged, this, &MainWindow::onWorkflowStageChanged);
+    connect(worker, &WorkflowWorker::deviceStageChanged, this,
+        [this, devices, result](int deviceIndex, const QString& operation, const QString& stage) {
+            if (result->received || deviceIndex < 0 || deviceIndex >= devices.size())
+                return;
+            for (int row = 0; row < mDevices.size(); ++row)
+            {
+                if (mDevices.at(row) == devices.at(deviceIndex))
+                {
+                    if (QTableWidgetItem* item = mDiscoveryTable->item(row, DiscoveryState))
+                        item->setText(workflowStageText(operation, stage));
+                    break;
+                }
+            }
+        });
+    connect(worker, &WorkflowWorker::deviceResult, this,
+        [this, devices, result](int deviceIndex, bool successful,
+            const QString& operation, const QString& stage) {
+            if (successful || deviceIndex < 0 || deviceIndex >= devices.size())
+                return;
+            result->deviceErrors.insert(deviceIndex,
+                stage.isEmpty() ? QStringLiteral("Подробности в журнале операций")
+                    : workflowStageText(operation, stage));
+        });
     connect(worker, &WorkflowWorker::identityRefreshed, this,
         [this, devices](int deviceIndex, DeviceIdentity identity) {
             if (deviceIndex < 0 || deviceIndex >= devices.size() || !devices.at(deviceIndex))
@@ -1282,6 +843,7 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
                 identity.id = identity.uuid;
             identity = mServices->catalog().enrich(identity);
             devices.at(deviceIndex)->updateIdentity(identity);
+            devices.at(deviceIndex)->updateProfile(mServices->catalog().profileForDevice(identity));
             for (int row = 0; row < mDevices.size(); ++row)
             {
                 if (mDevices.at(row) == devices.at(deviceIndex))
@@ -1297,8 +859,9 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
         result->successful = successful;
         result->operation = operation;
         result->stage = stage;
-        for (const std::shared_ptr<DeviceBase>& device : devices)
+        for (int deviceIndex = 0; deviceIndex < devices.size(); ++deviceIndex)
         {
+            const std::shared_ptr<DeviceBase>& device = devices.at(deviceIndex);
             for (int row = 0; row < mDevices.size(); ++row)
             {
                 if (mDevices.at(row) == device)
@@ -1318,6 +881,27 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
             mWorkflowThread = nullptr;
         setDevicesBusy(devices, false);
         setActionBusy(false);
+        const bool cancelled = mWorkflowCancelToken && mWorkflowCancelToken->load();
+        mWorkflowCancelToken.reset();
+        for (QPushButton* button : mWorkflowCancelButtons)
+            button->setEnabled(false);
+        for (auto it = result->deviceErrors.constBegin(); it != result->deviceErrors.constEnd(); ++it)
+        {
+            if (it.key() < 0 || it.key() >= devices.size())
+                continue;
+            for (int row = 0; row < mDevices.size(); ++row)
+            {
+                if (mDevices.at(row) == devices.at(it.key()))
+                {
+                    if (QTableWidgetItem* item = mDiscoveryTable->item(row, DiscoveryState))
+                    {
+                        item->setText(QStringLiteral("Ошибка операции"));
+                        item->setToolTip(it.value());
+                    }
+                    break;
+                }
+            }
+        }
 
         const bool successful = result->received && result->successful;
         const bool rediscoverAfterWorkflow = isFlashAction(action.id);
@@ -1330,8 +914,12 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
             title,
             successful
                 ? QStringLiteral("Операция завершена успешно.\nЭтап: %1%2").arg(stage, refreshMessage)
-                : QStringLiteral("Операция завершилась с ошибкой.\nЭтап: %1\n"
-                    "Подробности записаны в журнал операций.%2").arg(stage, refreshMessage),
+                : cancelled
+                    ? QStringLiteral("Операция прервана по запросу.\nЭтап: %1\n"
+                        "Проверьте состояние устройства перед повтором.%2")
+                        .arg(stage, refreshMessage)
+                    : QStringLiteral("Операция завершилась с ошибкой.\nЭтап: %1\n"
+                        "Подробности записаны в журнал операций.%2").arg(stage, refreshMessage),
             QMessageBox::Ok,
             this);
         notification.show();
@@ -1361,6 +949,8 @@ void MainWindow::startWorkflowAction(const ActionSpec& action, const QVector<std
         panel->setVisible(true);
     for (QProgressBar* progress : mWorkflowProgressBars)
         progress->setValue(0);
+    for (QPushButton* button : mWorkflowCancelButtons)
+        button->setEnabled(true);
     onWorkflowStageChanged(QStringLiteral("workflow.start"), QStringLiteral("start"));
     setDevicesBusy(devices, true);
     setActionBusy(true);
@@ -1443,6 +1033,7 @@ QString MainWindow::workflowStageText(const QString& operation, const QString& s
     static const QHash<QString, QString> operationTitles = {
         {QStringLiteral("workflow.start"), QStringLiteral("Подготовка операции")},
         {QStringLiteral("workflow.definition"), QStringLiteral("Загрузка сценария")},
+        {QStringLiteral("workflow.cancelled"), QStringLiteral("Операция отменена")},
         {QStringLiteral("workflow.complete"), QStringLiteral("Завершено")},
         {QStringLiteral("workflow"), QStringLiteral("Выполнение сценария")},
         {QStringLiteral("context.productionDate"), QStringLiteral("Проверка даты")},
@@ -1466,6 +1057,7 @@ QString MainWindow::workflowStageText(const QString& operation, const QString& s
         {QStringLiteral("firmware.validateArtifact"), QStringLiteral("Проверка файла прошивки")},
         {QStringLiteral("flash.validateArtifact"), QStringLiteral("Проверка файла прошивки")},
         {QStringLiteral("flash.prepare"), QStringLiteral("Подготовка прошивки")},
+        {QStringLiteral("flash.buildPagePlan"), QStringLiteral("Проверка размещения в flash")},
         {QStringLiteral("flash.preflight"), QStringLiteral("Подготовка flash-памяти")},
         {QStringLiteral("firmware.flash"), QStringLiteral("Запись прошивки")},
         {QStringLiteral("firmware.verify"), QStringLiteral("Проверка записанной прошивки")},
@@ -1617,7 +1209,7 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
         const QString title = action.title.isEmpty() ? action.id : action.title;
         const QVector<FirmwareArtifact> artifacts = artifactsForTarget(devices, action.target);
         const bool graphControlled = action.target == QStringLiteral("application")
-            && devices.first() && !devices.first()->identity().firmwareVersions.isEmpty();
+            && devices.first() && !devices.first()->firmwareVersions().isEmpty();
         const bool bootloaderFlash = action.target == QStringLiteral("bootloader");
         const bool allowsCustomFirmware = AppEdition::allowsCustomFirmware()
             && !graphControlled && !bootloaderFlash;
@@ -1631,9 +1223,9 @@ bool MainWindow::prepareActionInvocation(const ActionSpec& action, const QVector
             {
                 hasUnknownCurrentFirmware = true;
                 hasBlockedUnknownCurrentFirmware = hasBlockedUnknownCurrentFirmware
-                    || !device->identity().allowUnknownCurrentFirmware;
+                    || !device->allowUnknownCurrentFirmware();
             }
-            if (device && FirmwareAccessPolicy::isRestrictedExternalBocV6(device->identity()))
+            if (device && FirmwareAccessPolicy::isRestrictedExternalBocV6(*device))
                 hasRestrictedExternalBocV6 = true;
         }
 
@@ -1792,26 +1384,12 @@ void MainWindow::addDeviceRow(const std::shared_ptr<DeviceBase>& device)
 {
     const int row = mDevices.size() - 1;
     mDiscoveryTable->insertRow(row);
-    mFirmwareTable->insertRow(row);
-    if (mBootloaderTable)
-        mBootloaderTable->insertRow(row);
-    if (mProductionDateTable)
-        mProductionDateTable->insertRow(row);
-    if (mSerialNumberTable)
-        mSerialNumberTable->insertRow(row);
     updateDeviceRow(row, device);
 }
 
 void MainWindow::updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
 {
     updateDiscoveryDeviceRow(row, device);
-    updateFirmwareDeviceRow(row, device);
-    if (mBootloaderTable)
-        updateBootloaderDeviceRow(row, device);
-    if (mProductionDateTable)
-        updateProductionDateDeviceRow(row, device);
-    if (mSerialNumberTable)
-        updateSerialNumberDeviceRow(row, device);
 }
 
 bool MainWindow::isDeviceBusy(const std::shared_ptr<DeviceBase>& device) const
@@ -1841,7 +1419,15 @@ void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceB
     if (!device || row < 0 || row >= mDiscoveryTable->rowCount())
         return;
 
+    const QSignalBlocker blocker(mDiscoveryTable);
     const DeviceIdentity& identity = device->identity();
+    const Qt::CheckState previousCheckState = mDiscoveryTable->item(row, DiscoveryCheck)
+        ? mDiscoveryTable->item(row, DiscoveryCheck)->checkState() : Qt::Unchecked;
+    QTableWidgetItem* check = new QTableWidgetItem;
+    check->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+    check->setCheckState(previousCheckState);
+    check->setToolTip(QStringLiteral("Выбрать устройство для группового действия"));
+    mDiscoveryTable->setItem(row, DiscoveryCheck, check);
     const QString deviceText = identity.description.isEmpty()
         ? identity.name
         : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
@@ -1859,324 +1445,49 @@ void MainWindow::updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceB
         new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString()));
     mDiscoveryTable->setItem(row, DiscoveryChannel,
         new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
-    QTableWidgetItem* state = new QTableWidgetItem(identity.state);
+    QTableWidgetItem* firmware = new QTableWidgetItem(identity.currentFirmwareId.isEmpty()
+        ? QStringLiteral("—") : identity.currentFirmwareId);
+    firmware->setToolTip(firmware->text());
+    mDiscoveryTable->setItem(row, DiscoveryFirmware, firmware);
+    const QString stateText = identity.state == QStringLiteral("bootloader")
+        ? QStringLiteral("Загрузчик")
+        : identity.state == QStringLiteral("application")
+            ? QStringLiteral("Приложение") : identity.state;
+    QTableWidgetItem* state = new QTableWidgetItem(stateText);
+    state->setToolTip(identity.state);
     state->setForeground(identity.isBootloader() ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#2563eb")));
     mDiscoveryTable->setItem(row, DiscoveryState, state);
 
-    const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
-    bool canPing = false;
-    bool canLoadApplication = false;
+    const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(*device);
+    QToolButton* actions = new QToolButton;
+    actions->setObjectName(QStringLiteral("rowActions"));
+    actions->setText(QStringLiteral("Действия"));
+    actions->setPopupMode(QToolButton::InstantPopup);
+    QMenu* menu = new QMenu(actions);
     for (const ActionSpec& spec : specs)
     {
-        canPing = canPing || spec.id == QStringLiteral("device.ping");
-        canLoadApplication = canLoadApplication
-            || spec.id == QStringLiteral("device.application.load");
-    }
-    const bool deviceBusy = isDeviceBusy(device);
-    QPushButton* ping = new QPushButton;
-    ping->setObjectName(QStringLiteral("tablePing"));
-    ping->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
-    ping->setIconSize(QSize(18, 18));
-    ping->setAccessibleName(QStringLiteral("Ping"));
-    ping->setToolTip(deviceBusy
-        ? QStringLiteral("Дождитесь завершения текущей операции с устройством")
-        : QStringLiteral("Проверить связь с устройством"));
-    ping->setEnabled(canPing && !deviceBusy);
-    connect(ping, &QPushButton::clicked, this, [this, row]() {
-        runActionForRow(row, QStringLiteral("device.ping"));
-    });
-
-    QPushButton* loadApplication = nullptr;
-    if (identity.isBootloader() && canLoadApplication)
-    {
-        loadApplication = new QPushButton;
-        loadApplication->setObjectName(QStringLiteral("tableFlash"));
-        loadApplication->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-        loadApplication->setIconSize(QSize(18, 18));
-        loadApplication->setAccessibleName(QStringLiteral("Загрузить основное приложение"));
-        if (deviceBusy)
-            loadApplication->setToolTip(QStringLiteral("Дождитесь завершения текущей операции с устройством"));
-        else if (mWorkflowThread)
-            loadApplication->setToolTip(QStringLiteral("Дождитесь завершения текущей операции"));
-        else
-            loadApplication->setToolTip(QStringLiteral("Загрузить основное приложение"));
-        loadApplication->setEnabled(!deviceBusy && !mWorkflowThread);
-        connect(loadApplication, &QPushButton::clicked, this, [this, row]() {
-            runActionForRow(row, QStringLiteral("device.application.load"));
+        if (!actionHasArtifact(spec, {device}))
+            continue;
+        QAction* item = menu->addAction(spec.title.isEmpty() ? spec.id : spec.title);
+        connect(item, &QAction::triggered, this, [this, row, id = spec.id]() {
+            runActionForRow(row, id);
         });
     }
-    mDiscoveryTable->setCellWidget(row, DiscoveryPing,
-        tableButtonCell(ping, loadApplication));
+    actions->setMenu(menu);
+    actions->setEnabled(!menu->isEmpty() && !isDeviceBusy(device) && !mActionBusy);
+    actions->setToolTip(menu->isEmpty()
+        ? QStringLiteral("Для устройства нет доступных действий")
+        : QStringLiteral("Выбрать действие для устройства"));
+    mDiscoveryTable->setCellWidget(row, DiscoveryActions, actions);
     mDiscoveryTable->resizeRowToContents(row);
-}
-
-void MainWindow::updateFirmwareDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
-{
-    if (!device || row < 0 || row >= mFirmwareTable->rowCount())
-        return;
-
-    const DeviceIdentity& identity = device->identity();
-    const Qt::CheckState checkState = mFirmwareTable->item(row, FirmwareCheck)
-        ? mFirmwareTable->item(row, FirmwareCheck)->checkState()
-        : Qt::Unchecked;
-    QTableWidgetItem* check = new QTableWidgetItem;
-    check->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
-    check->setTextAlignment(Qt::AlignCenter);
-    check->setToolTip(QStringLiteral("Выбрать устройство для массовой прошивки"));
-    check->setCheckState(checkState);
-    mFirmwareTable->setItem(row, FirmwareCheck, check);
-
-    const QString deviceText = identity.description.isEmpty()
-        ? identity.name
-        : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
-    QTableWidgetItem* deviceItem = new QTableWidgetItem(deviceText);
-    deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
-        .arg(identity.typeHex(), identity.versionHex(), identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
-    mFirmwareTable->setItem(row, FirmwareDevice, deviceItem);
-    QTableWidgetItem* number = new QTableWidgetItem(
-        identity.serialNumber.isEmpty() ? QStringLiteral("—") : identity.serialNumber);
-    if (identity.serialNumber.isEmpty())
-        number->setToolTip(QStringLiteral("Номер устройства не получен\nID: %1").arg(identity.id));
-    mFirmwareTable->setItem(row, FirmwareNumber, number);
-    QTableWidgetItem* address = new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString());
-    address->setToolTip(QStringLiteral("Modbus address"));
-    mFirmwareTable->setItem(row, FirmwareAddress, address);
-    mFirmwareTable->setItem(row, FirmwareChannel,
-        new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
-    mFirmwareTable->setItem(row, FirmwareCurrent,
-        new QTableWidgetItem(identity.currentFirmwareId.isEmpty() ? QStringLiteral("—") : identity.currentFirmwareId));
-    QTableWidgetItem* state = new QTableWidgetItem(identity.state);
-    state->setForeground(identity.isBootloader() ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#2563eb")));
-    mFirmwareTable->setItem(row, FirmwareState, state);
-
-    const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
-    bool canPing = false;
-    bool supportsFlash = false;
-    for (const ActionSpec& spec : specs)
-    {
-        canPing = canPing || spec.id == QStringLiteral("device.ping");
-        supportsFlash = supportsFlash || spec.id == QStringLiteral("flash.application.write");
-    }
-    const bool hasFirmware = !artifactsForTarget({device}, QStringLiteral("application")).isEmpty();
-    const bool deviceBusy = isDeviceBusy(device);
-    const bool canFlash = supportsFlash && hasFirmware && !deviceBusy && !mWorkflowThread;
-
-    QPushButton* ping = new QPushButton;
-    ping->setObjectName(QStringLiteral("tablePing"));
-    ping->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
-    ping->setIconSize(QSize(18, 18));
-    ping->setAccessibleName(QStringLiteral("Ping"));
-    ping->setToolTip(deviceBusy
-        ? QStringLiteral("Дождитесь завершения текущей операции с устройством")
-        : QStringLiteral("Проверить связь с устройством"));
-    ping->setEnabled(canPing && !deviceBusy);
-    connect(ping, &QPushButton::clicked, this, [this, row]() {
-        runActionForRow(row, QStringLiteral("device.ping"));
-    });
-    QPushButton* flash = new QPushButton;
-    flash->setObjectName(QStringLiteral("tableFlash"));
-    flash->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
-    flash->setIconSize(QSize(18, 18));
-    flash->setAccessibleName(QStringLiteral("Прошить"));
-    flash->setAttribute(Qt::WA_AlwaysShowToolTips);
-    if (deviceBusy)
-        flash->setToolTip(QStringLiteral("Дождитесь завершения текущей операции с устройством"));
-    else if (mWorkflowThread)
-        flash->setToolTip(QStringLiteral("Дождитесь завершения текущей операции прошивки"));
-    else if (!supportsFlash)
-        flash->setToolTip(QStringLiteral("Прошивка недоступна для типа или текущего состояния устройства"));
-    else if (!hasFirmware)
-        flash->setToolTip(QStringLiteral("Нет подходящих прошивок для текущей версии устройства"));
-    else
-        flash->setToolTip(QStringLiteral("Выбрать доступную прошивку и записать её в устройство"));
-    flash->setEnabled(canFlash);
-    connect(flash, &QPushButton::clicked, this, [this, row]() {
-        runActionForRow(row, QStringLiteral("flash.application.write"));
-    });
-    mFirmwareTable->setCellWidget(row, FirmwareActions, tableButtonCell(ping, flash));
-    mFirmwareTable->resizeRowToContents(row);
-}
-
-void MainWindow::updateProductionDateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
-{
-    updateDeviceActionRow(mProductionDateTable, row, device,
-        QStringLiteral("device.productionDate.update"), true);
-}
-
-void MainWindow::updateBootloaderDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
-{
-    updateDeviceActionRow(mBootloaderTable, row, device,
-        QStringLiteral("flash.bootloader.write"), true);
-}
-
-void MainWindow::updateSerialNumberDeviceRow(int row, const std::shared_ptr<DeviceBase>& device)
-{
-    updateDeviceActionRow(mSerialNumberTable, row, device,
-        QStringLiteral("device.serialNumber.update"), false);
-}
-
-void MainWindow::updateDeviceActionRow(QTableWidget* table,
-    int row,
-    const std::shared_ptr<DeviceBase>& device,
-    const QString& actionId,
-    bool checkable)
-{
-    if (!table || !device || row < 0 || row >= table->rowCount())
-        return;
-
-    const QSignalBlocker blocker(table);
-    const DeviceIdentity& identity = device->identity();
-    const Qt::CheckState previousCheckState = table->item(row, DeviceActionCheck)
-        ? table->item(row, DeviceActionCheck)->checkState()
-        : Qt::Unchecked;
-
-    const QVector<ActionSpec> specs = mServices->actions().actionsForDevice(identity);
-    bool canPing = false;
-    bool supportsAction = false;
-    for (const ActionSpec& spec : specs)
-    {
-        canPing = canPing || spec.id == QStringLiteral("device.ping");
-        supportsAction = supportsAction || spec.id == actionId;
-    }
-    const bool bootloaderAction = actionId == QStringLiteral("flash.bootloader.write");
-    if (bootloaderAction)
-        supportsAction = supportsAction
-            && !artifactsForTarget({device}, QStringLiteral("bootloader")).isEmpty();
-    const bool deviceBusy = isDeviceBusy(device);
-
-    QTableWidgetItem* check = new QTableWidgetItem;
-    check->setTextAlignment(Qt::AlignCenter);
-    if (checkable)
-    {
-        Qt::ItemFlags flags = Qt::ItemIsUserCheckable;
-        if (supportsAction && !deviceBusy)
-            flags |= Qt::ItemIsEnabled;
-        check->setFlags(flags);
-        check->setCheckState(supportsAction ? previousCheckState : Qt::Unchecked);
-        const QString selectionHint = bootloaderAction
-            ? QStringLiteral("Выбрать устройство для групповой прошивки bootloader")
-            : QStringLiteral("Выбрать устройство для групповой смены даты");
-        const QString unavailableHint = bootloaderAction
-            ? QStringLiteral("Прошивка bootloader доступна для опознанного устройства в основном приложении, если для его модели есть файл bootloader")
-            : QStringLiteral("Смена даты недоступна для этого устройства");
-        check->setToolTip(supportsAction
-            ? (deviceBusy
-                ? QStringLiteral("Устройство занято текущей операцией")
-                : selectionHint)
-            : unavailableHint);
-    }
-    else
-    {
-        check->setFlags(Qt::NoItemFlags);
-    }
-    table->setItem(row, DeviceActionCheck, check);
-
-    const QString deviceText = identity.description.isEmpty()
-        ? identity.name
-        : QStringLiteral("%1\n%2").arg(identity.name, identity.description);
-    QTableWidgetItem* deviceItem = new QTableWidgetItem(deviceText);
-    deviceItem->setToolTip(QStringLiteral("%1 %2\nUUID: %3")
-        .arg(identity.typeHex(), identity.versionHex(),
-            identity.uuid.isEmpty() ? QStringLiteral("—") : identity.uuid));
-    table->setItem(row, DeviceActionDevice, deviceItem);
-
-    QTableWidgetItem* number = new QTableWidgetItem(
-        identity.serialNumber.isEmpty() ? QStringLiteral("—") : identity.serialNumber);
-    if (identity.serialNumber.isEmpty())
-        number->setToolTip(QStringLiteral("Номер устройства не получен\nID: %1").arg(identity.id));
-    table->setItem(row, DeviceActionNumber, number);
-    table->setItem(row, DeviceActionAddress,
-        new QTableWidgetItem(identity.modbusAddress > 0 ? QString::number(identity.modbusAddress) : QString()));
-    table->setItem(row, DeviceActionChannel,
-        new QTableWidgetItem(QStringLiteral("%1 %2").arg(identity.channel, identity.endpoint)));
-    table->setItem(row, DeviceActionCurrent,
-        new QTableWidgetItem(identity.currentFirmwareId.isEmpty() ? QStringLiteral("—") : identity.currentFirmwareId));
-    QTableWidgetItem* state = new QTableWidgetItem(identity.state);
-    state->setForeground(identity.isBootloader() ? QColor(QStringLiteral("#a15c07")) : QColor(QStringLiteral("#2563eb")));
-    table->setItem(row, DeviceActionState, state);
-
-    QPushButton* ping = new QPushButton;
-    ping->setObjectName(QStringLiteral("tablePing"));
-    ping->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
-    ping->setIconSize(QSize(18, 18));
-    ping->setAccessibleName(QStringLiteral("Ping"));
-    ping->setToolTip(deviceBusy
-        ? QStringLiteral("Дождитесь завершения текущей операции с устройством")
-        : QStringLiteral("Проверить связь с устройством"));
-    ping->setEnabled(canPing && !deviceBusy);
-    connect(ping, &QPushButton::clicked, this, [this, row]() {
-        runActionForRow(row, QStringLiteral("device.ping"));
-    });
-
-    const bool productionDateAction = actionId == QStringLiteral("device.productionDate.update");
-    const QString actionName = bootloaderAction
-        ? QStringLiteral("Прошить bootloader")
-        : (productionDateAction
-            ? QStringLiteral("Изменить дату производства")
-            : QStringLiteral("Изменить номер устройства"));
-    QPushButton* actionButton = new QPushButton;
-    actionButton->setObjectName(QStringLiteral("tableFlash"));
-    actionButton->setIcon(style()->standardIcon(bootloaderAction
-        ? QStyle::SP_ArrowDown
-        : (productionDateAction
-            ? QStyle::SP_FileDialogDetailedView
-            : QStyle::SP_FileDialogContentsView)));
-    actionButton->setIconSize(QSize(18, 18));
-    actionButton->setAccessibleName(actionName);
-    actionButton->setAttribute(Qt::WA_AlwaysShowToolTips);
-    if (deviceBusy)
-        actionButton->setToolTip(QStringLiteral("Дождитесь завершения текущей операции с устройством"));
-    else if (mWorkflowThread)
-        actionButton->setToolTip(QStringLiteral("Дождитесь завершения текущей операции"));
-    else if (!supportsAction)
-        actionButton->setToolTip(QStringLiteral("%1 недоступно для этого устройства").arg(actionName));
-    else
-        actionButton->setToolTip(actionName);
-    actionButton->setEnabled(supportsAction && !deviceBusy && !mWorkflowThread);
-    connect(actionButton, &QPushButton::clicked, this, [this, row, actionId]() {
-        runActionForRow(row, actionId);
-    });
-
-    table->setCellWidget(row, DeviceActionActions, tableButtonCell(ping, actionButton));
-    table->resizeRowToContents(row);
 }
 
 QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedDevices() const
 {
     QVector<std::shared_ptr<DeviceBase>> selected;
-    for (int row = 0; row < mFirmwareTable->rowCount() && row < mDevices.size(); ++row)
+    for (int row = 0; row < mDiscoveryTable->rowCount() && row < mDevices.size(); ++row)
     {
-        const QTableWidgetItem* item = mFirmwareTable->item(row, FirmwareCheck);
-        if (item && item->checkState() == Qt::Checked)
-            selected.append(mDevices.at(row));
-    }
-    return selected;
-}
-
-QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedProductionDateDevices() const
-{
-    QVector<std::shared_ptr<DeviceBase>> selected;
-    if (!mProductionDateTable)
-        return selected;
-
-    for (int row = 0; row < mProductionDateTable->rowCount() && row < mDevices.size(); ++row)
-    {
-        const QTableWidgetItem* item = mProductionDateTable->item(row, DeviceActionCheck);
-        if (item && item->checkState() == Qt::Checked)
-            selected.append(mDevices.at(row));
-    }
-    return selected;
-}
-
-QVector<std::shared_ptr<DeviceBase>> MainWindow::selectedBootloaderDevices() const
-{
-    QVector<std::shared_ptr<DeviceBase>> selected;
-    if (!mBootloaderTable)
-        return selected;
-
-    for (int row = 0; row < mBootloaderTable->rowCount() && row < mDevices.size(); ++row)
-    {
-        const QTableWidgetItem* item = mBootloaderTable->item(row, DeviceActionCheck);
+        const QTableWidgetItem* item = mDiscoveryTable->item(row, DiscoveryCheck);
         if (item && item->checkState() == Qt::Checked)
             selected.append(mDevices.at(row));
     }
@@ -2278,130 +1589,43 @@ void MainWindow::showPingDialog(const std::shared_ptr<DeviceBase>& device)
 
 void MainWindow::rebuildBulkMenu()
 {
-    if (!mBulkFlashButton)
+    if (!mBulkActionsButton)
         return;
 
+    QMenu* menu = mBulkActionsButton->menu();
+    menu->clear();
     const QVector<std::shared_ptr<DeviceBase>> selected = selectedDevices();
-    const QVector<ActionSpec> actions = mServices->actions().commonActions(selected);
-    bool hasApplicationFlash = false;
-    for (const ActionSpec& action : actions)
-        hasApplicationFlash = hasApplicationFlash || action.id == QStringLiteral("flash.application.write");
     bool hasBusyDevice = false;
     for (const std::shared_ptr<DeviceBase>& device : selected)
         hasBusyDevice = hasBusyDevice || isDeviceBusy(device);
 
-    const bool hasCommonFirmware = hasApplicationFlash
-        && !artifactsForTarget(selected, QStringLiteral("application")).isEmpty();
-    mBulkFlashButton->setText(selected.isEmpty()
-        ? QStringLiteral("Прошить выбранные")
-        : QStringLiteral("Прошить выбранные (%1)").arg(selected.size()));
-    if (selected.isEmpty())
-        mBulkFlashButton->setToolTip(QStringLiteral("Выберите устройства флажками в первом столбце"));
-    else if (hasBusyDevice)
-        mBulkFlashButton->setToolTip(QStringLiteral("Дождитесь завершения операции с выбранным устройством"));
-    else if (!hasApplicationFlash)
-        mBulkFlashButton->setToolTip(QStringLiteral("Прошивка недоступна для одного или нескольких выбранных устройств"));
-    else if (!hasCommonFirmware)
-        mBulkFlashButton->setToolTip(QStringLiteral("Для выбранных устройств нет общей подходящей прошивки"));
-    else
-        mBulkFlashButton->setToolTip(QStringLiteral(
-            "Выбрать общую прошивку для отмеченных устройств; одновременно прошиваются не более 5"));
-    mBulkFlashButton->setEnabled(
-        hasCommonFirmware && !hasBusyDevice && !mWorkflowThread && !mActionBusy);
-}
-
-void MainWindow::rebuildProductionDateBulkAction()
-{
-    if (!mBulkProductionDateButton)
-        return;
-
-    const QVector<std::shared_ptr<DeviceBase>> selected = selectedProductionDateDevices();
-    bool hasBusyDevice = false;
-    bool allSupported = !selected.isEmpty();
-    for (const std::shared_ptr<DeviceBase>& device : selected)
+    const QVector<ActionSpec> common = mServices->actions().commonActions(selected);
+    for (const ActionSpec& action : common)
     {
-        hasBusyDevice = hasBusyDevice || isDeviceBusy(device);
-        bool supported = false;
-        if (device)
-        {
-            const QVector<ActionSpec> actions = mServices->actions().actionsForDevice(device->identity());
-            for (const ActionSpec& action : actions)
-                supported = supported || action.id == QStringLiteral("device.productionDate.update");
-        }
-        allSupported = allSupported && supported;
+        if (!actionHasArtifact(action, selected))
+            continue;
+        QAction* item = menu->addAction(action.title.isEmpty() ? action.id : action.title);
+        connect(item, &QAction::triggered, this, [this, action, selected]() {
+            executeAction(action, selected);
+        });
     }
-
-    mBulkProductionDateButton->setText(selected.isEmpty()
-        ? QStringLiteral("Изменить дату выбранным")
-        : QStringLiteral("Изменить дату выбранным (%1)").arg(selected.size()));
-    if (selected.isEmpty())
-        mBulkProductionDateButton->setToolTip(
-            QStringLiteral("Выберите устройства флажками в первом столбце"));
-    else if (hasBusyDevice)
-        mBulkProductionDateButton->setToolTip(
-            QStringLiteral("Дождитесь завершения операции с выбранным устройством"));
-    else if (!allSupported)
-        mBulkProductionDateButton->setToolTip(
-            QStringLiteral("Смена даты недоступна для одного из выбранных устройств"));
-    else if (mWorkflowThread)
-        mBulkProductionDateButton->setToolTip(
-            QStringLiteral("Дождитесь завершения текущей операции"));
-    else
-        mBulkProductionDateButton->setToolTip(
-            QStringLiteral("Установить одну дату на отмеченных устройствах"));
-    mBulkProductionDateButton->setEnabled(allSupported && !hasBusyDevice && !mWorkflowThread);
-}
-
-void MainWindow::rebuildBootloaderBulkAction()
-{
-    if (!mBulkBootloaderButton)
-        return;
-
-    const QVector<std::shared_ptr<DeviceBase>> selected = selectedBootloaderDevices();
-    bool hasBusyDevice = false;
-    bool allSupported = !selected.isEmpty();
-    for (const std::shared_ptr<DeviceBase>& device : selected)
-    {
-        hasBusyDevice = hasBusyDevice || isDeviceBusy(device);
-        bool supported = false;
-        if (device)
-        {
-            const QVector<ActionSpec> actions = mServices->actions().actionsForDevice(device->identity());
-            for (const ActionSpec& action : actions)
-                supported = supported || action.id == QStringLiteral("flash.bootloader.write");
-            supported = supported
-                && !artifactsForTarget({device}, QStringLiteral("bootloader")).isEmpty();
-        }
-        allSupported = allSupported && supported;
-    }
-
-    mBulkBootloaderButton->setText(selected.isEmpty()
-        ? QStringLiteral("Прошить bootloader выбранным")
-        : QStringLiteral("Прошить bootloader выбранным (%1)").arg(selected.size()));
-    if (selected.isEmpty())
-        mBulkBootloaderButton->setToolTip(
-            QStringLiteral("Выберите устройства флажками в первом столбце"));
-    else if (hasBusyDevice)
-        mBulkBootloaderButton->setToolTip(
-            QStringLiteral("Дождитесь завершения операции с выбранным устройством"));
-    else if (!allSupported)
-        mBulkBootloaderButton->setToolTip(
-            QStringLiteral("Прошивка bootloader недоступна для одного из выбранных устройств"));
-    else
-        mBulkBootloaderButton->setToolTip(
-            QStringLiteral("Записать и проверить bootloader на выбранных устройствах параллельно"));
-    mBulkBootloaderButton->setEnabled(allSupported && !hasBusyDevice && !mWorkflowThread);
+    mBulkActionsButton->setText(selected.isEmpty()
+        ? QStringLiteral("Действия с выбранными")
+        : QStringLiteral("Действия с выбранными (%1)").arg(selected.size()));
+    mBulkActionsButton->setEnabled(!menu->isEmpty() && !hasBusyDevice
+        && !mActionBusy && !mWorkflowThread);
+    mBulkActionsButton->setToolTip(selected.isEmpty()
+        ? QStringLiteral("Отметьте устройства в первом столбце")
+        : (menu->isEmpty()
+            ? QStringLiteral("Для выбранных устройств нет общего доступного действия")
+            : QStringLiteral("Выбрать общее действие для отмеченных устройств")));
 }
 
 void MainWindow::setActionBusy(bool busy)
 {
     mActionBusy = busy;
-    if (mBulkFlashButton)
-        mBulkFlashButton->setEnabled(false);
-    if (mBulkBootloaderButton)
-        mBulkBootloaderButton->setEnabled(false);
-    if (mBulkProductionDateButton)
-        mBulkProductionDateButton->setEnabled(false);
+    if (mBulkActionsButton)
+        mBulkActionsButton->setEnabled(false);
 
     const QVector<QWidget*> interactionWidgets = {
         mLineMode,
@@ -2411,11 +1635,7 @@ void MainWindow::setActionBusy(bool busy)
         mRs485Protocol,
         mAddressStart,
         mAddressEnd,
-        mDiscoveryTable,
-        mFirmwareTable,
-        mBootloaderTable,
-        mProductionDateTable,
-        mSerialNumberTable
+        mDiscoveryTable
     };
     for (QWidget* widget : interactionWidgets)
     {
@@ -2427,7 +1647,6 @@ void MainWindow::setActionBusy(bool busy)
         updateDeviceRow(row, mDevices.at(row));
     if (!busy)
         updateBulkMenu();
-    updateNavigationActions();
     if (mSearchButton)
         mSearchButton->setEnabled(!busy && !mDiscoveryBusy);
 }
@@ -2438,5 +1657,4 @@ void MainWindow::setBusy(bool busy)
     mSearchButton->setEnabled(!busy && !mActionBusy);
     mSearchButton->setText(busy ? QStringLiteral("Идет поиск...") :
         (mLineMode->currentData().toString() == QStringLiteral("rs485") ? QStringLiteral("Поиск RS-485") : QStringLiteral("Broadcast поиск")));
-    updateNavigationActions();
 }

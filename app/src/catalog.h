@@ -6,19 +6,20 @@
 #include <QHash>
 #include <QString>
 #include <QVector>
+#include <memory>
 
 class CatalogService
 {
 public:
     bool load(const QString& fileName, QString* error = nullptr);
     DeviceIdentity enrich(DeviceIdentity device) const;
-    bool isLoaded() const { return !mEntries.isEmpty(); }
+    std::shared_ptr<const DeviceProfile> profileForDevice(const DeviceIdentity& device) const;
+    const QVector<std::shared_ptr<const DeviceProfile>>& profiles() const { return mProfiles; }
+    bool isLoaded() const { return !mProfiles.isEmpty(); }
 
 private:
-    const CatalogEntry* entryForDevice(const DeviceIdentity& device) const;
-    QHash<quint16, CatalogEntry> mEntriesByType;
-    QVector<CatalogEntry> mEntries;
-    QHash<QString, FirmwareCatalog> mFirmwareByDeviceId;
+    QHash<quint16, std::shared_ptr<const DeviceProfile>> mProfilesByType;
+    QVector<std::shared_ptr<const DeviceProfile>> mProfiles;
 };
 
 #endif // DEVICE_WORKBENCH_CATALOG_H

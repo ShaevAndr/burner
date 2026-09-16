@@ -2,8 +2,17 @@
   "schemaVersion": 1,
   "workflows": [
     {
+      "id": "device.ping",
+      "steps": [
+        {"op": "device.ping", "index": 0}
+      ]
+    },
+    {
       "id": "device.production-date.update",
       "steps": [
+        {
+          "op": "device.ensureUuid"
+        },
         {
           "op": "context.productionDate"
         },
@@ -69,6 +78,9 @@
       "id": "device.serial-number.update",
       "steps": [
         {
+          "op": "device.ensureUuid"
+        },
+        {
           "op": "context.serialNumber"
         },
         {
@@ -132,6 +144,9 @@
       "id": "device.application.load",
       "steps": [
         {
+          "op": "device.ensureUuid"
+        },
+        {
           "op": "device.loadApplicationNoReply",
           "label": "load application",
           "message": "int[0] = 1, response is not expected"
@@ -159,16 +174,19 @@
           "op": "firmware.validateTransition"
         },
         {
+          "op": "firmware.validateArtifact"
+        },
+        {
           "op": "device.enterBootloader",
           "timeoutMs": 15000,
           "pollIntervalMs": 500,
           "settleMs": 250
         },
         {
-          "op": "device.disableApplicationLoad"
+          "op": "flash.buildPagePlan"
         },
         {
-          "op": "firmware.validateArtifact"
+          "op": "device.disableApplicationLoad"
         },
         {
           "op": "firmware.flash"
@@ -203,10 +221,16 @@
       "id": "firmware.bootloader.direct",
       "steps": [
         {
+          "op": "device.ensureUuid"
+        },
+        {
           "op": "flash.prepare"
         },
         {
           "op": "flash.validateArtifact"
+        },
+        {
+          "op": "flash.buildPagePlan"
         },
         {
           "op": "firmware.flash"
@@ -223,10 +247,16 @@
       "id": "flash.write",
       "steps": [
         {
+          "op": "device.ensureUuid"
+        },
+        {
           "op": "flash.prepare"
         },
         {
           "op": "flash.validateArtifact"
+        },
+        {
+          "op": "flash.buildPagePlan"
         },
         {
           "op": "flash.preflight"

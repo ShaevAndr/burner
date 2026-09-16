@@ -1,6 +1,7 @@
 #include "workflow_definition.h"
 #include "app_edition.h"
 #include "firmware_access_policy.h"
+#include "operation_registry.h"
 
 #include <QCryptographicHash>
 #include <QCoreApplication>
@@ -59,22 +60,6 @@ static QString resolveArtifactPath(const QString& relativePath)
 #endif
 }
 
-static QString sha256File(const QString& fileName, QString* error)
-{
-    QFile file(fileName);
-    if (!file.open(QIODevice::ReadOnly))
-    {
-        if (error)
-            *error = file.errorString();
-        return {};
-    }
-
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    while (!file.atEnd())
-        hash.addData(file.read(64 * 1024));
-    return QString::fromLatin1(hash.result().toHex());
-}
-
 static bool deviceDescriptionContainsKeywords(const QString& description, const QStringList& keywords)
 {
     if (keywords.isEmpty())
@@ -96,12 +81,12 @@ static void sleepWithEvents(int ms)
     QThread::msleep(static_cast<unsigned long>(ms));
 }
 
-static FirmwareFlashPlan buildFlashPlan(const DeviceIdentity& identity, const ActionSpec& action)
+static FirmwareFlashPlan buildFlashPlan(const DeviceBase& device, const ActionSpec& action)
 {
     FirmwareFlashPlan plan;
     plan.workflowId = action.workflow;
     plan.target = action.target;
-    plan.artifact = identity.firmwareForTarget(action.target);
+    plan.artifact = device.firmwareForTarget(action.target);
     plan.strategyId = QStringLiteral("page-flash");
     plan.flashNum = plan.artifact.flashNum;
     plan.offset = plan.artifact.offset;
@@ -146,8 +131,66 @@ static QVariantMap jsonObjectToVariantMap(const QJsonObject& object)
     return result;
 }
 
+static OperationError operationError(const QString& operationId,
+    const QString& details, bool cancelled = false)
+{
+    OperationError error;
+    error.operationId = operationId;
+    error.technicalDetails = details;
+    if (cancelled)
+    {
+        error.code = QStringLiteral("OPERATION_CANCELLED");
+        error.category = QStringLiteral("cancelled");
+        error.safeMessage = QStringLiteral("Операция отменена на безопасной границе");
+        return error;
+    }
+    if (operationId == QStringLiteral("device.ensureUuid"))
+    {
+        error.code = QStringLiteral("IDENTITY_CHECK_FAILED");
+        error.category = QStringLiteral("identity");
+    }
+    else if (operationId == QStringLiteral("firmware.flash"))
+    {
+        error.code = QStringLiteral("FLASH_WRITE_FAILED");
+        error.category = QStringLiteral("device");
+    }
+    else if (operationId == QStringLiteral("firmware.verify"))
+    {
+        error.code = QStringLiteral("FLASH_VERIFY_FAILED");
+        error.category = QStringLiteral("verification");
+    }
+    else if (operationId == QStringLiteral("firmware.verifyInstalledVersion"))
+    {
+        error.code = QStringLiteral("APPLICATION_VERSION_MISMATCH");
+        error.category = QStringLiteral("verification");
+    }
+    else if (operationId == QStringLiteral("flash.validateArtifact")
+        || operationId == QStringLiteral("firmware.validateArtifact")
+        || operationId == QStringLiteral("flash.buildPagePlan"))
+    {
+        error.code = QStringLiteral("FIRMWARE_PREFLIGHT_FAILED");
+        error.category = QStringLiteral("configuration");
+    }
+    else if (operationId == QStringLiteral("device.waitForApplication"))
+    {
+        error.code = QStringLiteral("APPLICATION_NOT_FOUND");
+        error.category = QStringLiteral("identity");
+    }
+    else
+    {
+        error.code = QStringLiteral("OPERATION_FAILED");
+        error.category = QStringLiteral("device");
+    }
+    const OperationContract* contract = OperationRegistry::instance().find(operationId);
+    error.retryable = contract && contract->idempotency != OperationIdempotency::Unsafe;
+    error.safeMessage = QStringLiteral("Не удалось выполнить шаг %1").arg(operationId);
+    return error;
+}
+
 bool WorkflowRepository::load(const QString& fileName, QString* error)
 {
+    if (error)
+        error->clear();
     QFile file(fileName);
     if (!file.open(QIODevice::ReadOnly))
     {
@@ -164,17 +207,34 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
             *error = QStringLiteral("Workflows %1 is not a valid JSON object: %2").arg(fileName, parseError.errorString());
         return false;
     }
+    const QJsonObject root = doc.object();
+    if (!root.value(QStringLiteral("schemaVersion")).isDouble()
+        || root.value(QStringLiteral("schemaVersion")).toDouble() != 1.0
+        || !root.value(QStringLiteral("workflows")).isArray())
+    {
+        if (error)
+            *error = QStringLiteral("CONFIG_INVALID_SCHEMA: workflows require schemaVersion 1 and a workflows array");
+        return false;
+    }
 
     QHash<QString, WorkflowDefinition> loaded;
-    const QJsonArray workflows = doc.object().value(QStringLiteral("workflows")).toArray();
+    const QJsonArray workflows = root.value(QStringLiteral("workflows")).toArray();
     for (const QJsonValue& workflowValue : workflows)
     {
         const QJsonObject workflowObject = workflowValue.toObject();
         WorkflowDefinition definition;
         definition.id = workflowObject.value(QStringLiteral("id")).toString();
-        if (definition.id.isEmpty())
-            continue;
+        definition.version = QString::fromLatin1(QCryptographicHash::hash(
+            QJsonDocument(workflowObject).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex());
+        if (definition.id.isEmpty() || loaded.contains(definition.id))
+        {
+            if (error)
+                *error = QStringLiteral("Workflow has an empty or duplicate id: %1").arg(definition.id);
+            return false;
+        }
 
+        bool uuidConfirmed = false;
         const QJsonArray steps = workflowObject.value(QStringLiteral("steps")).toArray();
         for (const QJsonValue& stepValue : steps)
         {
@@ -188,7 +248,98 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
             step.retryAttempts = stepObject.value(QStringLiteral("retry")).toInt(1);
 
             step.arguments = jsonObjectToVariantMap(stepObject);
+            const OperationContract* contract = OperationRegistry::instance().find(step.op);
+            if (!contract)
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_UNKNOWN_OPERATION: %1 in workflow %2")
+                        .arg(step.op, definition.id);
+                return false;
+            }
+            const QJsonValue retry = stepObject.value(QStringLiteral("retry"));
+            if ((!retry.isUndefined() && (!retry.isDouble()
+                    || retry.toDouble() != step.retryAttempts))
+                || step.retryAttempts < 1 || step.retryAttempts > 10
+                || (step.retryAttempts > 1
+                    && contract->idempotency == OperationIdempotency::Unsafe)
+                || (!step.skipIfState.isEmpty()
+                    && step.skipIfState != QStringLiteral("application")
+                    && step.skipIfState != QStringLiteral("bootloader"))
+                || !contract->validate(step.arguments, error))
+            {
+                if (error && error->isEmpty())
+                    *error = QStringLiteral("CONFIG_INVALID_ARGUMENT: retry in workflow %1")
+                        .arg(definition.id);
+                return false;
+            }
+            step.contract = contract;
+            if (contract->sideEffect != OperationSideEffect::None && !uuidConfirmed)
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_UNSAFE_WORKFLOW: %1 changes a device at %2 before device.ensureUuid")
+                        .arg(definition.id, step.op);
+                return false;
+            }
+            if (step.op == QStringLiteral("device.ensureUuid"))
+                uuidConfirmed = true;
             definition.steps.append(step);
+        }
+
+        if (definition.steps.isEmpty())
+        {
+            if (error)
+                *error = QStringLiteral("Workflow %1 has no steps").arg(definition.id);
+            return false;
+        }
+
+        int flashIndex = -1;
+        int validationIndex = -1;
+        int pagePlanIndex = -1;
+        int verifyIndex = -1;
+        int bootloaderIndex = -1;
+        int applicationWaitIndex = -1;
+        int versionVerifyIndex = -1;
+        for (int index = 0; index < definition.steps.size(); ++index)
+        {
+            const QString& op = definition.steps.at(index).op;
+            if (op == QStringLiteral("firmware.flash") && flashIndex < 0)
+                flashIndex = index;
+            else if (op == QStringLiteral("firmware.validateArtifact")
+                || op == QStringLiteral("flash.validateArtifact"))
+            {
+                if (validationIndex < 0)
+                    validationIndex = index;
+            }
+            else if (op == QStringLiteral("firmware.verify"))
+                verifyIndex = index;
+            else if (op == QStringLiteral("flash.buildPagePlan") && pagePlanIndex < 0)
+                pagePlanIndex = index;
+            else if (op == QStringLiteral("device.enterBootloader") && bootloaderIndex < 0)
+                bootloaderIndex = index;
+            else if (op == QStringLiteral("device.waitForApplication"))
+                applicationWaitIndex = index;
+            else if (op == QStringLiteral("firmware.verifyInstalledVersion"))
+                versionVerifyIndex = index;
+        }
+        if (flashIndex >= 0 && (validationIndex < 0
+                || validationIndex >= flashIndex
+                || pagePlanIndex <= validationIndex
+                || pagePlanIndex >= flashIndex
+                || verifyIndex <= flashIndex
+                || (bootloaderIndex >= 0 && validationIndex >= bootloaderIndex)))
+        {
+            if (error)
+                *error = QStringLiteral("CONFIG_UNSAFE_FLASH_WORKFLOW: %1 requires artifact validation, "
+                    "page planning before write and page verification after write").arg(definition.id);
+            return false;
+        }
+        if (flashIndex >= 0 && applicationWaitIndex >= 0
+            && versionVerifyIndex <= applicationWaitIndex)
+        {
+            if (error)
+                *error = QStringLiteral("CONFIG_UNSAFE_FLASH_WORKFLOW: %1 requires installed version "
+                    "verification after application reappears").arg(definition.id);
+            return false;
         }
 
         loaded.insert(definition.id, definition);
@@ -201,19 +352,26 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
         return false;
     }
 
-    mDefinitions = loaded;
+    QHash<QString, std::shared_ptr<const WorkflowDefinition>> snapshots;
+    for (auto it = loaded.cbegin(); it != loaded.cend(); ++it)
+        snapshots.insert(it.key(), std::make_shared<const WorkflowDefinition>(it.value()));
+    {
+        QWriteLocker locker(&mLock);
+        mDefinitions = std::move(snapshots);
+    }
     return true;
 }
 
-const WorkflowDefinition* WorkflowRepository::definitionFor(const ActionSpec& action) const
+std::shared_ptr<const WorkflowDefinition> WorkflowRepository::snapshotFor(const ActionSpec& action) const
 {
+    QReadLocker locker(&mLock);
     auto byWorkflow = mDefinitions.constFind(action.workflow);
     if (byWorkflow != mDefinitions.constEnd())
-        return &byWorkflow.value();
+        return byWorkflow.value();
 
     auto byAction = mDefinitions.constFind(action.id);
     if (byAction != mDefinitions.constEnd())
-        return &byAction.value();
+        return byAction.value();
 
     const QHash<QString, QString> legacyActionWorkflows = {
         {QStringLiteral("device.productionDate.update"), QStringLiteral("device.production-date.update")},
@@ -226,16 +384,37 @@ const WorkflowDefinition* WorkflowRepository::definitionFor(const ActionSpec& ac
     {
         auto mapped = mDefinitions.constFind(mappedWorkflow);
         if (mapped != mDefinitions.constEnd())
-            return &mapped.value();
+            return mapped.value();
     }
 
-    return nullptr;
+    return {};
 }
 
-const WorkflowDefinition* WorkflowRepository::definitionForId(const QString& workflowId) const
+std::shared_ptr<const WorkflowDefinition> WorkflowRepository::snapshotForId(const QString& workflowId) const
 {
+    QReadLocker locker(&mLock);
     const auto definition = mDefinitions.constFind(workflowId);
-    return definition == mDefinitions.constEnd() ? nullptr : &definition.value();
+    return definition == mDefinitions.constEnd()
+        ? std::shared_ptr<const WorkflowDefinition>() : definition.value();
+}
+
+bool WorkflowRepository::isEmpty() const
+{
+    QReadLocker locker(&mLock);
+    return mDefinitions.isEmpty();
+}
+
+void WorkflowRepository::replaceWith(const WorkflowRepository& other)
+{
+    if (&other == this)
+        return;
+    QHash<QString, std::shared_ptr<const WorkflowDefinition>> snapshots;
+    {
+        QReadLocker locker(&other.mLock);
+        snapshots = other.mDefinitions;
+    }
+    QWriteLocker locker(&mLock);
+    mDefinitions = std::move(snapshots);
 }
 
 WorkflowExecution::WorkflowExecution(const WorkflowDefinition& definition,
@@ -253,6 +432,20 @@ bool WorkflowExecution::next(DeviceBase& device)
 {
     if (mFinished)
         return false;
+
+    if (mCallbacks.shouldCancel && mCallbacks.shouldCancel())
+    {
+        mError = operationError(QStringLiteral("workflow.cancelled"), {}, true);
+        if (mCallbacks.stageChanged)
+            mCallbacks.stageChanged(QStringLiteral("workflow.cancelled"),
+                QStringLiteral("cancelled before the next step"));
+        log(QStringLiteral("[%1] operation cancelled before the next workflow step")
+            .arg(device.identity().typeHex()));
+        mSuccessful = false;
+        mFinished = true;
+        restoreApplicationAfterFailure(device);
+        return false;
+    }
 
     if (mNextStep >= mDefinition.steps.size())
     {
@@ -272,15 +465,33 @@ bool WorkflowExecution::next(DeviceBase& device)
         if (!step.skippedLog.isEmpty())
             log(formatMessage(identity, step.skippedLog, step.arguments));
     }
-    else if ((isRuntimeStep(step.op) && !executeRuntimeStep(device, step))
-        || (!isRuntimeStep(step.op) && !executeDeviceStep(device, step)))
+    else if (!step.contract)
     {
+        mError = operationError(step.op, QStringLiteral("Unknown operation"));
+        mError.code = QStringLiteral("CONFIG_UNKNOWN_OPERATION");
+        mError.category = QStringLiteral("configuration");
+        log(QStringLiteral("Unknown operation in active workflow: %1").arg(step.op));
+        mSuccessful = false;
+        mFinished = true;
+        return false;
+    }
+    else if ((step.contract->kind == OperationKind::Runtime
+            && !executeRuntimeStep(device, step))
+        || (step.contract->kind == OperationKind::Device
+            && !executeDeviceStep(device, step)))
+    {
+        if (!mError.isValid())
+            mError = operationError(step.op,
+                step.contract->kind == OperationKind::Device ? mContext.transportError : QString(),
+                mCallbacks.shouldCancel && mCallbacks.shouldCancel());
         mSuccessful = false;
         restoreApplicationAfterFailure(device);
         mFinished = true;
         return false;
     }
 
+    if (mCallbacks.stepCompleted)
+        mCallbacks.stepCompleted(step.op);
     progress(completedProgressPercent());
 
     if (mNextStep >= mDefinition.steps.size())
@@ -343,14 +554,12 @@ void WorkflowExecution::emitTransportLog(const DeviceIdentity& identity)
 
 bool WorkflowExecution::ensureDeviceUuid(DeviceBase& device)
 {
-    if (!device.identity().uuid.isEmpty())
-        return true;
-
     QString uuid;
     QString error;
     QString raw;
     if (!device.readUuid(&uuid, &error, &raw))
     {
+        mError = operationError(QStringLiteral("device.ensureUuid"), error);
         if (!raw.isEmpty())
             transportLog(QStringLiteral("[%1] %2").arg(device.identity().typeHex(), raw));
         log(QStringLiteral("[%1] UUID read before reset failed: %2")
@@ -359,6 +568,25 @@ bool WorkflowExecution::ensureDeviceUuid(DeviceBase& device)
     }
     if (!raw.isEmpty())
         transportLog(QStringLiteral("[%1] %2").arg(device.identity().typeHex(), raw));
+
+    const QString expected = device.identity().uuid.trimmed();
+    if (uuid.trimmed().isEmpty())
+    {
+        mError = operationError(QStringLiteral("device.ensureUuid"),
+            QStringLiteral("Empty UUID"));
+        log(QStringLiteral("[%1] UUID read returned an empty value")
+            .arg(device.identity().typeHex()));
+        return false;
+    }
+    if (!expected.isEmpty() && expected.compare(uuid.trimmed(), Qt::CaseInsensitive) != 0)
+    {
+        mError = operationError(QStringLiteral("device.ensureUuid"),
+            QStringLiteral("UUID mismatch: expected %1, read %2").arg(expected, uuid.trimmed()));
+        mError.code = QStringLiteral("IDENTITY_UUID_MISMATCH");
+        log(QStringLiteral("[%1] device UUID changed: expected %2, read %3")
+            .arg(device.identity().typeHex(), expected, uuid.trimmed()));
+        return false;
+    }
 
     DeviceIdentity updated = device.identity();
     updated.uuid = uuid;
@@ -407,10 +635,9 @@ bool WorkflowExecution::runOperationWithRetry(const DeviceIdentity& identity,
 
         emitTransportLog(identity);
 
-        const bool retryable = mContext.transportError.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)
-            || mContext.transportError.contains(QStringLiteral("timeout"), Qt::CaseInsensitive)
-            || mContext.transportError.contains(QStringLiteral("not ready"), Qt::CaseInsensitive)
-            || mContext.transportError.contains(QStringLiteral("Device returned ASCII error"), Qt::CaseInsensitive);
+        const OperationContract* contract = step.contract;
+        const bool retryable = contract
+            && contract->idempotency != OperationIdempotency::Unsafe;
         if (!retryable || attempt == attempts)
             break;
 
@@ -445,7 +672,7 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
         transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), loadRaw));
 
     DeviceIdentity expected = identity;
-    expected.type = identity.applicationType;
+    expected.type = device.applicationType();
     expected.version = 0;
     expected.state = QStringLiteral("application");
     DeviceIdentity found;
@@ -476,35 +703,6 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
     mContext.applicationLoadingDisabled = false;
     log(QStringLiteral("[%1] main application restored after failed operation")
         .arg(updated.typeHex()));
-}
-
-bool WorkflowExecution::isRuntimeStep(const QString& operation) const
-{
-    static const QSet<QString> runtimeOperations = {
-        QStringLiteral("context.productionDate"),
-        QStringLiteral("context.serialNumber"),
-        QStringLiteral("sleep"),
-        QStringLiteral("device.connect"),
-        QStringLiteral("device.ensureUuid"),
-        QStringLiteral("firmware.validateTransition"),
-        QStringLiteral("device.enterBootloader"),
-        QStringLiteral("device.disableApplicationLoad"),
-        QStringLiteral("device.captureServiceData"),
-        QStringLiteral("firmware.validateArtifact"),
-        QStringLiteral("firmware.flash"),
-        QStringLiteral("firmware.verify"),
-        QStringLiteral("device.restoreServiceData"),
-        QStringLiteral("device.waitForApplication"),
-        QStringLiteral("firmware.verifyInstalledVersion"),
-        QStringLiteral("firmware.complete"),
-        QStringLiteral("flash.prepare"),
-        QStringLiteral("flash.validateArtifact"),
-        QStringLiteral("flash.preflight"),
-        QStringLiteral("flash.complete"),
-        QStringLiteral("workflow.finish"),
-        QStringLiteral("log")
-    };
-    return runtimeOperations.contains(operation);
 }
 
 bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowStep& step)
@@ -568,7 +766,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     if (step.op == QStringLiteral("firmware.validateTransition"))
     {
         mContext.targetFirmwareId = mParameters.value(QStringLiteral("targetFirmwareId")).toString();
-        const FirmwareVersionSpec* target = identity.firmwareVersionById(mContext.targetFirmwareId);
+        const FirmwareVersionSpec* target = device.firmwareVersionById(mContext.targetFirmwareId);
         if (!target)
         {
             log(QStringLiteral("[%1] firmware target %2 is not configured for this device")
@@ -577,9 +775,9 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         }
 
         const bool unknownCurrentFirmware = identity.known && identity.currentFirmwareId.isEmpty();
-        if (!FirmwareAccessPolicy::isTargetAllowed(identity, mContext.targetFirmwareId))
+        if (!FirmwareAccessPolicy::isTargetAllowed(device, mContext.targetFirmwareId))
         {
-            if (FirmwareAccessPolicy::isRestrictedExternalBocV6(identity))
+            if (FirmwareAccessPolicy::isRestrictedExternalBocV6(device))
             {
                 log(QStringLiteral("[%1] external BOC-V-6 policy denied firmware transition %2 -> %3; "
                                    "only BOCv6_ADCVibr_Digital20260721_1228.hex -> "
@@ -587,7 +785,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
                     .arg(identity.typeHex(), identity.currentFirmwareId, mContext.targetFirmwareId));
                 return false;
             }
-            const FirmwareTransitionSpec* transition = identity.transitionTo(mContext.targetFirmwareId);
+            const FirmwareTransitionSpec* transition = device.transitionTo(mContext.targetFirmwareId);
             const QString reason = transition && !transition->reason.isEmpty()
                 ? transition->reason
                 : QStringLiteral("transition is not configured or disabled");
@@ -610,7 +808,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 
         mContext.targetFirmware = *target;
         mContext.transitionValidated = true;
-        mContext.flashPlan = buildFlashPlan(identity, mAction);
+        mContext.flashPlan = buildFlashPlan(device, mAction);
         mContext.flashPlan.workflowId = target->installation.workflow;
         mContext.flashPlan.strategyId = target->installation.strategy;
         mContext.flashPlan.strategyParameters = target->installation.parameters;
@@ -667,7 +865,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         }
         if (!raw.isEmpty())
             transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-        if (identity.bootloaderType == 0)
+        if (device.bootloaderType() == 0)
         {
             log(QStringLiteral("[%1] bootloader identity is not configured").arg(identity.typeHex()));
             return false;
@@ -682,7 +880,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         const int pollIntervalMs = step.arguments.value(QStringLiteral("pollIntervalMs"), 500).toInt();
         log(QStringLiteral("[%1] waiting for bootloader (expected type %2, description fallback enabled)")
             .arg(identity.typeHex(),
-                QStringLiteral("0X%1").arg(identity.bootloaderType, 4, 16, QLatin1Char('0')).toUpper()));
+                QStringLiteral("0X%1").arg(device.bootloaderType(), 4, 16, QLatin1Char('0')).toUpper()));
         if (!device.waitForDeviceIdentity(expected, timeoutMs, pollIntervalMs, &found, &error, &raw))
         {
             if (!raw.isEmpty())
@@ -696,8 +894,8 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         static const QRegularExpression bootMarker(
             QStringLiteral("\\(\\s*Boot\\s*\\)"),
             QRegularExpression::CaseInsensitiveOption);
-        const bool configuredIdentityMatches = found.type == identity.bootloaderType;
-        const bool descriptionMatches = deviceDescriptionContainsKeywords(found.description, identity.descriptionKeywords);
+        const bool configuredIdentityMatches = found.type == device.bootloaderType();
+        const bool descriptionMatches = deviceDescriptionContainsKeywords(found.description, device.descriptionKeywords());
         const bool hasBootMarker = bootMarker.match(found.description).hasMatch();
         const bool uuidMatches = !identity.uuid.isEmpty()
             && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
@@ -741,9 +939,9 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
             bool* available;
         };
         const ServiceValue values[] = {
-            {identity.productionDateRegister, QStringLiteral("production date"),
+            {device.productionDateRegister(), QStringLiteral("production date"),
                 &mContext.preservedProductionDate, &mContext.hasPreservedProductionDate},
-            {identity.serialNumberRegister, QStringLiteral("serial number"),
+            {device.serialNumberRegister(), QStringLiteral("serial number"),
                 &mContext.preservedSerialNumber, &mContext.hasPreservedSerialNumber}
         };
         for (const ServiceValue& service : values)
@@ -787,11 +985,11 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         return executeRuntimeStep(device, validationStep);
     }
 
-    if (step.op == QStringLiteral("firmware.flash"))
+    if (step.op == QStringLiteral("flash.buildPagePlan"))
     {
         if (mContext.flashPlan.data.isEmpty())
         {
-            log(QStringLiteral("[%1] flash requested before artifact validation").arg(identity.typeHex()));
+            log(QStringLiteral("[%1] page plan requested before artifact validation").arg(identity.typeHex()));
             return false;
         }
         const FirmwareFlashStrategy* strategy = FirmwareFlashStrategyRegistry::find(mContext.flashPlan.strategyId);
@@ -805,7 +1003,32 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
             [this](const QString& message) { log(message); },
             [this](const QString& message) { transportLog(message); },
             [this](int value) { progress(value); },
-            [this]() { processEvents(); }
+            [this]() { processEvents(); },
+            [this]() { return mCallbacks.shouldCancel && mCallbacks.shouldCancel(); }
+        };
+        return strategy->prepare(device, mContext.flashPlan, callbacks);
+    }
+
+    if (step.op == QStringLiteral("firmware.flash"))
+    {
+        if (!mContext.flashPlan.writePlan)
+        {
+            log(QStringLiteral("[%1] flash requested before page plan preparation").arg(identity.typeHex()));
+            return false;
+        }
+        const FirmwareFlashStrategy* strategy = FirmwareFlashStrategyRegistry::find(mContext.flashPlan.strategyId);
+        if (!strategy)
+        {
+            log(QStringLiteral("[%1] unknown flash strategy '%2'")
+                .arg(identity.typeHex(), mContext.flashPlan.strategyId));
+            return false;
+        }
+        const FirmwareFlashCallbacks callbacks = {
+            [this](const QString& message) { log(message); },
+            [this](const QString& message) { transportLog(message); },
+            [this](int value) { progress(value); },
+            [this]() { processEvents(); },
+            [this]() { return mCallbacks.shouldCancel && mCallbacks.shouldCancel(); }
         };
         mContext.flashWritten = strategy->flash(device, mContext.flashPlan, callbacks);
         return mContext.flashWritten;
@@ -834,9 +1057,9 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
             bool available;
         };
         const ServiceValue values[] = {
-            {identity.productionDateRegister, QStringLiteral("production date"),
+            {device.productionDateRegister(), QStringLiteral("production date"),
                 mContext.preservedProductionDate, mContext.hasPreservedProductionDate},
-            {identity.serialNumberRegister, QStringLiteral("serial number"),
+            {device.serialNumberRegister(), QStringLiteral("serial number"),
                 mContext.preservedSerialNumber, mContext.hasPreservedSerialNumber}
         };
         for (const ServiceValue& service : values)
@@ -880,7 +1103,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     if (step.op == QStringLiteral("device.waitForApplication"))
     {
         DeviceIdentity expected = identity;
-        expected.type = identity.applicationType;
+        expected.type = device.applicationType();
         expected.version = 0;
         expected.state = QStringLiteral("application");
         const int timeoutMs = step.arguments.value(QStringLiteral("timeoutMs"), 15000).toInt();
@@ -901,6 +1124,13 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
                     transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
 
                 const DeviceIdentity found = mContext.reappearedIdentity;
+                if (!expected.uuid.isEmpty()
+                    && found.uuid.compare(expected.uuid, Qt::CaseInsensitive) != 0)
+                {
+                    log(QStringLiteral("[%1] application UUID mismatch: expected %2, found %3")
+                        .arg(identity.typeHex(), expected.uuid, found.uuid));
+                    return false;
+                }
                 DeviceIdentity updated = identity;
                 updated.id = !identity.uuid.isEmpty() ? identity.uuid : found.id;
                 updated.endpoint = found.endpoint;
@@ -948,7 +1178,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
     {
         const DeviceIdentity& found = mContext.reappearedIdentity;
         const QRegularExpression targetMatcher(mContext.targetFirmware.descriptionRegex);
-        const bool identityMatches = found.type == identity.applicationType;
+        const bool identityMatches = found.type == device.applicationType();
         const bool uuidMatches = !identity.uuid.isEmpty()
             && found.uuid.compare(identity.uuid, Qt::CaseInsensitive) == 0;
         const bool descriptionMatches = targetMatcher.isValid()
@@ -987,7 +1217,7 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 
     if (step.op == QStringLiteral("flash.prepare"))
     {
-        mContext.flashPlan = buildFlashPlan(identity, mAction);
+        mContext.flashPlan = buildFlashPlan(device, mAction);
         mContext.flashPlan.artifact = artifactFromVariant(mParameters.value(QStringLiteral("artifact")).toMap(), mContext.flashPlan.artifact);
         if (!mContext.flashPlan.artifact.flashStrategy.isEmpty())
             mContext.flashPlan.strategyId = mContext.flashPlan.artifact.flashStrategy;
@@ -1027,15 +1257,23 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
             reportProgressStage(identity, QStringLiteral("validating firmware artifact"));
             const QString fileName = resolveArtifactPath(mContext.flashPlan.artifact.relativePath);
             mContext.flashPlan.fileName = fileName;
-            QString hashError;
-            const QString actualHash = sha256File(fileName, &hashError);
-            if (actualHash.isEmpty())
+            QFile file(fileName);
+            if (!file.open(QIODevice::ReadOnly))
             {
                 log(QStringLiteral("[%1] firmware file read failed: %2")
-                    .arg(identity.typeHex(), hashError));
+                    .arg(identity.typeHex(), file.errorString()));
                 return false;
             }
-            else if (actualHash.compare(mContext.flashPlan.artifact.sha256, Qt::CaseInsensitive) == 0)
+            mContext.flashPlan.data = file.readAll();
+            if (file.error() != QFileDevice::NoError || mContext.flashPlan.data.isEmpty())
+            {
+                log(QStringLiteral("[%1] firmware file is empty or unreadable: %2")
+                    .arg(identity.typeHex(), file.errorString()));
+                return false;
+            }
+            const QString actualHash = QString::fromLatin1(QCryptographicHash::hash(
+                mContext.flashPlan.data, QCryptographicHash::Sha256).toHex());
+            if (actualHash.compare(mContext.flashPlan.artifact.sha256, Qt::CaseInsensitive) == 0)
             {
                 log(QStringLiteral("[%1] firmware hash OK").arg(identity.typeHex()));
             }
@@ -1050,17 +1288,11 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
                 return false;
             }
 
-            QFile file(fileName);
-            if (!file.open(QIODevice::ReadOnly))
+            QString formatError;
+            if (!validateFirmwareImage(mContext.flashPlan, &formatError))
             {
-                log(QStringLiteral("[%1] firmware file open failed: %2")
-                    .arg(identity.typeHex(), file.errorString()));
-                return false;
-            }
-            mContext.flashPlan.data = file.readAll();
-            if (mContext.flashPlan.data.isEmpty())
-            {
-                log(QStringLiteral("[%1] firmware file is empty").arg(identity.typeHex()));
+                log(QStringLiteral("[%1] firmware format invalid: %2")
+                    .arg(identity.typeHex(), formatError));
                 return false;
             }
         }
@@ -1132,22 +1364,22 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
 bool WorkflowExecution::verifyFlashPages(DeviceBase& device)
 {
     const DeviceIdentity& identity = device.identity();
-    if (mContext.flashPlan.expectedPages.isEmpty()
-        || mContext.flashPlan.expectedPageNumbers.size()
-            != mContext.flashPlan.expectedPages.size())
+    const auto writePlan = mContext.flashPlan.writePlan;
+    if (!writePlan || writePlan->pages.isEmpty()
+        || writePlan->pageNumbers.size() != writePlan->pages.size())
     {
         log(QStringLiteral("[%1] flash verify requested before any pages were written")
             .arg(identity.typeHex()));
         return false;
     }
 
-    for (int pageIndex = 0; pageIndex < mContext.flashPlan.expectedPages.size(); ++pageIndex)
+    for (int pageIndex = 0; pageIndex < writePlan->pages.size(); ++pageIndex)
     {
         QByteArray actual;
         QString error;
         QString raw;
-        const int pageNum = mContext.flashPlan.expectedPageNumbers.at(pageIndex);
-        if (!device.flashReadPage(mContext.flashPlan.flashNum, pageNum, &actual, &error, &raw))
+        const int pageNum = writePlan->pageNumbers.at(pageIndex);
+        if (!device.flashReadPage(writePlan->flashNum, pageNum, &actual, &error, &raw))
         {
             if (!raw.isEmpty())
                 transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
@@ -1159,7 +1391,7 @@ bool WorkflowExecution::verifyFlashPages(DeviceBase& device)
         }
         if (!raw.isEmpty())
             transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), raw));
-        if (actual != mContext.flashPlan.expectedPages.at(pageIndex))
+        if (actual != writePlan->pages.at(pageIndex))
         {
             log(QStringLiteral("[%1] flash page %2 verify mismatch")
                 .arg(identity.typeHex())
@@ -1167,7 +1399,7 @@ bool WorkflowExecution::verifyFlashPages(DeviceBase& device)
             return false;
         }
 
-        progress(80 + ((pageIndex + 1) * 20) / mContext.flashPlan.expectedPages.size());
+        progress(80 + ((pageIndex + 1) * 20) / writePlan->pages.size());
         processEvents();
     }
     log(QStringLiteral("[%1] flash verify OK").arg(identity.typeHex()));
@@ -1180,14 +1412,18 @@ bool WorkflowExecution::executeDeviceStep(DeviceBase& device, const WorkflowStep
         return false;
 
     const DeviceIdentity& identity = device.identity();
-    const DeviceOperation operation = device.operation(step.op);
-    if (!operation)
+    const OperationContract* contract = step.contract;
+    if (!contract || !contract->handler)
     {
         log(QStringLiteral("[%1] operation %2 is not supported by %3")
             .arg(identity.typeHex(), step.op, device.className()));
         return false;
     }
 
+    const DeviceOperation operation = [&device, contract](const QVariantMap& arguments,
+        QString* error, QString* raw) {
+        return contract->handler(device, arguments, error, raw);
+    };
     const QVariantMap arguments = resolveArguments(step);
     if (!step.message.isEmpty())
         log(formatMessage(identity, step.message, arguments));

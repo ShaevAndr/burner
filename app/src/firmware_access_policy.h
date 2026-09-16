@@ -2,6 +2,7 @@
 #define DEVICE_WORKBENCH_FIRMWARE_ACCESS_POLICY_H
 
 #include "app_edition.h"
+#include "base_device.h"
 #include "models.h"
 
 #include <QFileInfo>
@@ -28,6 +29,30 @@ inline bool isTargetAllowed(const DeviceIdentity& identity, const QString& targe
 
     const FirmwareVersionSpec* current = identity.firmwareVersionById(identity.currentFirmwareId);
     const FirmwareVersionSpec* target = identity.firmwareVersionById(targetFirmwareId);
+    return artifactFileName(current).compare(
+               QStringLiteral("BOCv6_ADCVibr_Digital20260721_1228.hex"),
+               Qt::CaseInsensitive) == 0
+        && artifactFileName(target).compare(
+               QStringLiteral("BOCv6_ADCVibr_Digital20260831_1007.hex"),
+               Qt::CaseInsensitive) == 0;
+}
+
+inline bool isRestrictedExternalBocV6(const DeviceBase& device)
+{
+    return !AppEdition::isInternal()
+        && (device.profile() ? device.profile()->id : device.identity().catalogId)
+            == QStringLiteral("boc.v6");
+}
+
+inline bool isTargetAllowed(const DeviceBase& device, const QString& targetFirmwareId)
+{
+    if (!device.isFirmwareTargetAllowed(targetFirmwareId))
+        return false;
+    if (!isRestrictedExternalBocV6(device))
+        return true;
+    const FirmwareVersionSpec* current = device.firmwareVersionById(
+        device.identity().currentFirmwareId);
+    const FirmwareVersionSpec* target = device.firmwareVersionById(targetFirmwareId);
     return artifactFileName(current).compare(
                QStringLiteral("BOCv6_ADCVibr_Digital20260721_1228.hex"),
                Qt::CaseInsensitive) == 0

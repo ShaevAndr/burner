@@ -14,12 +14,13 @@
 #include <QSet>
 #include <QTableWidget>
 #include <QVariantMap>
+#include <atomic>
 #include <memory>
 
 class QThread;
-class QStackedWidget;
 class QLabel;
 class QCloseEvent;
+class QToolButton;
 
 class MainWindow : public QMainWindow
 {
@@ -40,8 +41,6 @@ private slots:
     void onDiscoveryFinished();
     void updateLineMode();
     void updateBulkMenu();
-    void runProductionDateUpdate();
-    void runBootloaderUpdate();
     void runActionForRow(int row, const QString& actionId);
     void executeAction(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices);
     void appendLog(const QString& message);
@@ -51,46 +50,22 @@ private slots:
 
 private:
     void buildUi();
-    QWidget* buildSidebar();
     QWidget* buildDiscoveryPage();
-    QWidget* buildFirmwarePage();
-    QWidget* buildBootloaderPage();
-    QWidget* buildProductionDatePage();
-    QWidget* buildSerialNumberPage();
     QWidget* buildLogsPanel();
     QWidget* buildDiscoveryPanel();
     QWidget* buildDiscoveryTablePanel();
-    QWidget* buildFirmwareTablePanel();
-    QWidget* buildBootloaderTablePanel();
-    QWidget* buildProductionDateTablePanel();
-    QWidget* buildSerialNumberTablePanel();
     QWidget* buildWorkflowProgressPanel();
     void addDeviceRow(const std::shared_ptr<DeviceBase>& device);
     void updateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
     void updateDiscoveryDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
-    void updateFirmwareDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
-    void updateBootloaderDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
-    void updateProductionDateDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
-    void updateSerialNumberDeviceRow(int row, const std::shared_ptr<DeviceBase>& device);
-    void updateDeviceActionRow(QTableWidget* table,
-        int row,
-        const std::shared_ptr<DeviceBase>& device,
-        const QString& actionId,
-        bool checkable);
     void mergeDiscoveredDevice(const std::shared_ptr<DeviceBase>& device);
     QVector<std::shared_ptr<DeviceBase>> selectedDevices() const;
-    QVector<std::shared_ptr<DeviceBase>> selectedBootloaderDevices() const;
-    QVector<std::shared_ptr<DeviceBase>> selectedProductionDateDevices() const;
-    QVector<std::shared_ptr<DeviceBase>> devicesForAction(const QString& actionId, bool includeBusy = true) const;
-    void updateNavigationActions();
-    void showPage(int pageIndex);
+    bool actionHasArtifact(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices) const;
     ActionSpec actionById(const QString& actionId) const;
     bool prepareActionInvocation(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, QVariantMap* parameters);
     void startWorkflowAction(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters);
     void showPingDialog(const std::shared_ptr<DeviceBase>& device);
     void rebuildBulkMenu();
-    void rebuildBootloaderBulkAction();
-    void rebuildProductionDateBulkAction();
     bool isDeviceBusy(const std::shared_ptr<DeviceBase>& device) const;
     void setDevicesBusy(const QVector<std::shared_ptr<DeviceBase>>& devices, bool busy);
     void setBusy(bool busy);
@@ -133,25 +108,15 @@ private:
     QLineEdit* mAddressEnd = nullptr;
     QWidget* mRs485Panel = nullptr;
     QPushButton* mSearchButton = nullptr;
-    QPushButton* mDiscoveryTabButton = nullptr;
-    QPushButton* mFirmwareTabButton = nullptr;
-    QPushButton* mBootloaderTabButton = nullptr;
-    QPushButton* mProductionDateButton = nullptr;
-    QPushButton* mSerialNumberButton = nullptr;
-    QStackedWidget* mPages = nullptr;
-    QPushButton* mBulkFlashButton = nullptr;
-    QPushButton* mBulkBootloaderButton = nullptr;
-    QPushButton* mBulkProductionDateButton = nullptr;
+    QToolButton* mBulkActionsButton = nullptr;
     QVector<QWidget*> mWorkflowProgressPanels;
     QVector<QLabel*> mWorkflowStageLabels;
     QVector<QProgressBar*> mWorkflowProgressBars;
+    QVector<QPushButton*> mWorkflowCancelButtons;
+    std::shared_ptr<std::atomic_bool> mWorkflowCancelToken;
     QTableWidget* mDiscoveryTable = nullptr;
     QLabel* mDeviceDataProgressLabel = nullptr;
     QProgressBar* mDeviceDataProgressBar = nullptr;
-    QTableWidget* mFirmwareTable = nullptr;
-    QTableWidget* mBootloaderTable = nullptr;
-    QTableWidget* mProductionDateTable = nullptr;
-    QTableWidget* mSerialNumberTable = nullptr;
     QVector<QPlainTextEdit*> mOperationLogs;
     QVector<QPlainTextEdit*> mTransportLogs;
     bool mDiscoveryBusy = false;

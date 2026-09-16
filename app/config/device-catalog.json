@@ -13,6 +13,7 @@
         "БОЦ-В-12"
       ],
       "operationParameters": {
+        "applicationLoadRegister": 0,
         "productionDateRegister": 9,
         "serialNumberRegister": 10
       },
@@ -23,8 +24,7 @@
         "device.productionDate.update",
         "device.serialNumber.update",
         "device.application.load"
-      ],
-      "deviceClass": "BocV12Device"
+      ]
     },
     {
       "id": "boc.v6",
@@ -38,6 +38,7 @@
         "БОЦ-В-6"
       ],
       "operationParameters": {
+        "applicationLoadRegister": 0,
         "productionDateRegister": 9,
         "serialNumberRegister": 10
       },
@@ -48,8 +49,7 @@
         "device.productionDate.update",
         "device.serialNumber.update",
         "device.application.load"
-      ],
-      "deviceClass": "DeviceBase"
+      ]
     }
   ],
   "firmwareCatalogs": [
@@ -63,7 +63,7 @@
           "title": "БОЦ-В-12 Bootloader",
           "version": "2026-08-20 15:03:26",
           "relativePath": "flash/boc-v12/bootloader/BOCv12_GD32F470Z_BootLoader20260820_150326.hex",
-          "sha256": "35D88F87F3B0529CE606E778C0A4B12DDB0A1B31AF39C22C1DFC81571AD183B0",
+          "sha256": "214710A78B4F3645F3351CE253B1D997645725B24A34A9F669EB329EDDE3D9B3",
           "format": "intelHex",
           "addressBase": "0x08000000",
           "default": true,
@@ -91,7 +91,7 @@
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260715.hex",
-            "sha256": "71B4CEF1A6A78CC54AD71C36F600004D7A024BA0021258C9206209F2AC89F8DC",
+            "sha256": "0B2A98E12541EB4EBB4479891F95401DD5C992CD68A0FC19D6E7D82482CB50E6",
             "format": "intelHex",
             "addressBase": "0x08040000",
             "flashNum": 1
@@ -109,7 +109,7 @@
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v12/BOCv12_ADCVibr_Digital20260831_1800.hex",
-            "sha256": "E1D396AF5E4A50B7B53FE465E7EEDECDDE74CFDCD76D4BCBB85C24EF0903BF41",
+            "sha256": "69F0E7E2ACD247A1D053ADA62AC5E1CC3BD31021B34FB41D0680118FC62E9C2F",
             "format": "intelHex",
             "addressBase": "0x08040000",
             "default": true,
@@ -145,7 +145,7 @@
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260721_1228.hex",
-            "sha256": "956ADF340E7A4E3407A31A0C3558697376CB1ABD75B69E9FA938F7A53C1669A9",
+            "sha256": "26440B701713A49BF77ECD46B6671E7539D9CD85C6FC0CFEFF800DE5FEC5042F",
             "format": "intelHex",
             "addressBase": "0x08040000",
             "flashNum": 1
@@ -163,7 +163,7 @@
           "artifact": {
             "target": "application",
             "relativePath": "flash/boc-v6/BOCv6_ADCVibr_Digital20260831_1007.hex",
-            "sha256": "71E07625773EBFC501250F2D3924AF3714050B5D408CE0F42134CCCE2FDAFAEB",
+            "sha256": "9257E902A2A07B59E1B26CF009240A97C7596B50701EF03B2F2C87E5929F670C",
             "format": "intelHex",
             "addressBase": "0x08040000",
             "default": true,

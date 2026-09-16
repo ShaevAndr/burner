@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QVector>
+#include <memory>
 
 struct FirmwareArtifact
 {
@@ -90,7 +91,6 @@ struct DeviceIdentity
 
     QString catalogId;
     QStringList descriptionKeywords;
-    QString deviceClass;
     QString status;
     bool known = false;
     QString currentFirmwareId;
@@ -101,6 +101,7 @@ struct DeviceIdentity
     quint16 bootloaderVersion = 0;
     int productionDateRegister = -1;
     int serialNumberRegister = -1;
+    int applicationLoadRegister = 0;
     QStringList capabilities;
     QVector<FirmwareArtifact> firmwareArtifacts;
     QVector<FirmwareVersionSpec> firmwareVersions;
@@ -184,15 +185,36 @@ struct CatalogEntry
     quint16 bootloaderVersion = 0;
     int productionDateRegister = -1;
     int serialNumberRegister = -1;
+    int applicationLoadRegister = 0;
     QString name;
     QStringList descriptionKeywords;
-    QString deviceClass;
     QStringList capabilities;
 };
 
 struct FirmwareCatalog
 {
     QString deviceId;
+    QVector<FirmwareArtifact> firmwareArtifacts;
+    QVector<FirmwareVersionSpec> firmwareVersions;
+    QVector<FirmwareTransitionSpec> firmwareTransitions;
+    bool allowUnknownCurrentFirmware = true;
+};
+
+// Immutable catalog data shared by all sessions of the same model.
+struct DeviceProfile
+{
+    QString id;
+    QString protocol;
+    quint16 applicationType = 0;
+    quint16 applicationVersion = 0;
+    quint16 bootloaderType = 0;
+    quint16 bootloaderVersion = 0;
+    QString name;
+    QStringList descriptionKeywords;
+    QStringList capabilities;
+    int applicationLoadRegister = 0;
+    int productionDateRegister = -1;
+    int serialNumberRegister = -1;
     QVector<FirmwareArtifact> firmwareArtifacts;
     QVector<FirmwareVersionSpec> firmwareVersions;
     QVector<FirmwareTransitionSpec> firmwareTransitions;

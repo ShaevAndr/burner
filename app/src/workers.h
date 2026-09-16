@@ -5,6 +5,7 @@
 #include "workflow.h"
 
 #include <QObject>
+#include <atomic>
 #include <QVector>
 #include <QVariantMap>
 #include <memory>
@@ -37,6 +38,7 @@ public:
         ActionSpec action,
         QVector<std::shared_ptr<DeviceBase>> devices,
         QVariantMap parameters,
+        std::shared_ptr<std::atomic_bool> cancelToken = {},
         QObject* parent = nullptr);
 
 public slots:
@@ -47,6 +49,8 @@ signals:
     void transportLogMessage(QString message);
     void progressChanged(int percent);
     void stageChanged(QString operation, QString stage);
+    void deviceStageChanged(int deviceIndex, QString operation, QString stage);
+    void deviceResult(int deviceIndex, bool successful, QString operation, QString stage);
     void identityRefreshed(int deviceIndex, DeviceIdentity identity);
     void finished(bool successful, QString stageOperation, QString stage);
 
@@ -55,6 +59,7 @@ private:
     ActionSpec mAction;
     QVector<std::shared_ptr<DeviceBase>> mDevices;
     QVariantMap mParameters;
+    std::shared_ptr<std::atomic_bool> mCancelToken;
 };
 
 class PingWorker : public QObject

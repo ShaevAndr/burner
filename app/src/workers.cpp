@@ -1,4 +1,6 @@
 #include "workers.h"
+#include "job_scheduler.h"
+#include "execution_journal.h"
 
 #include <QElapsedTimer>
 #include <QJsonDocument>
@@ -8,8 +10,6 @@
 #include <QMutexLocker>
 #include <QTimer>
 
-#include <atomic>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -132,12 +132,14 @@ WorkflowWorker::WorkflowWorker(WorkflowRepository* workflows,
     ActionSpec action,
     QVector<std::shared_ptr<DeviceBase>> devices,
     QVariantMap parameters,
+    std::shared_ptr<std::atomic_bool> cancelToken,
     QObject* parent) :
     QObject(parent),
     mWorkflows(workflows),
     mAction(std::move(action)),
     mDevices(std::move(devices)),
-    mParameters(std::move(parameters))
+    mParameters(std::move(parameters)),
+    mCancelToken(std::move(cancelToken))
 {
 }
 
@@ -153,6 +155,7 @@ void WorkflowWorker::run()
         QString refreshError;
         bool hasRefreshedIdentity = false;
         DeviceIdentity refreshedIdentity;
+        OperationError workflowError;
     };
 
     const int deviceCount = mDevices.size();
@@ -165,9 +168,6 @@ void WorkflowWorker::run()
 
     std::vector<DeviceRunResult> results(static_cast<size_t>(deviceCount));
     std::vector<int> deviceProgress(static_cast<size_t>(deviceCount), 0);
-    std::vector<std::thread> threads;
-    const int workerCount = qMin(activeDeviceCount, MaxParallelDevices);
-    threads.reserve(static_cast<size_t>(workerCount));
     QMutex progressMutex;
     QMutex signalMutex;
 
@@ -182,6 +182,11 @@ void WorkflowWorker::run()
     const auto emitStage = [this, &signalMutex](const QString& operation, const QString& stage) {
         QMutexLocker locker(&signalMutex);
         emit stageChanged(operation, stage);
+    };
+    const auto emitDeviceStage = [this, &signalMutex](int deviceIndex,
+        const QString& operation, const QString& stage) {
+        QMutexLocker locker(&signalMutex);
+        emit deviceStageChanged(deviceIndex, operation, stage);
     };
     const auto updateProgress = [this, &deviceProgress, &progressMutex, &signalMutex,
                                     activeDeviceCount](int deviceIndex, int percent) {
@@ -207,21 +212,74 @@ void WorkflowWorker::run()
             .arg(activeDeviceCount - MaxParallelDevices));
     }
 
-    std::atomic<int> nextDeviceIndex{0};
-    const auto runNextDevices = [this, deviceCount, &nextDeviceIndex, &results,
-                                    &emitLog, &emitTransportLog, &emitStage, &updateProgress]() {
-        while (true)
-        {
-            const int deviceIndex = nextDeviceIndex.fetch_add(1);
-            if (deviceIndex >= deviceCount)
-                return;
-
+    JobScheduler scheduler(MaxParallelDevices);
+    ExecutionJournal journal;
+    scheduler.run(mDevices, [this, &results, &emitLog, &emitTransportLog,
+                                &emitStage, &emitDeviceStage, &updateProgress, &journal](int deviceIndex,
+        const QString& jobId, const QString& executionId, bool hasPhysicalKey) {
             const std::shared_ptr<DeviceBase> device = mDevices.at(deviceIndex);
             if (!device)
-                continue;
+                return;
 
             DeviceRunResult& result = results.at(static_cast<size_t>(deviceIndex));
+            QString workflowId = mAction.workflow;
+            QString workflowVersion;
+            QString completedOperationId;
+            bool flashMayHaveStarted = false;
+            const auto record = [&](const QString& event, const QString& operation,
+                const QString& errorCode = QString()) {
+                QJsonObject entry{
+                    {QStringLiteral("jobId"), jobId},
+                    {QStringLiteral("executionId"), executionId},
+                    {QStringLiteral("uuid"), device->identity().uuid},
+                    {QStringLiteral("endpoint"), device->identity().endpoint},
+                    {QStringLiteral("workflowId"), workflowId},
+                    {QStringLiteral("workflowVersion"), workflowVersion},
+                    {QStringLiteral("operationId"), operation},
+                    {QStringLiteral("completedOperationId"), completedOperationId},
+                    {QStringLiteral("event"), event},
+                    {QStringLiteral("errorCode"), errorCode},
+                    {QStringLiteral("flashMayHaveStarted"), flashMayHaveStarted}
+                };
+                QString journalError;
+                if (!journal.append(entry, &journalError))
+                    emitLog(QStringLiteral("Execution journal write failed: %1").arg(journalError));
+            };
+            record(QStringLiteral("started"), QStringLiteral("workflow.start"));
+            if (!hasPhysicalKey)
+            {
+                result.workflowSuccessful = false;
+                result.failedOperation = QStringLiteral("device.identity");
+                result.failedStage = QStringLiteral("physical device key is unavailable");
+                emitLog(QStringLiteral("[%1] execution %2 refused: no UUID or endpoint")
+                    .arg(jobId, executionId));
+                emitDeviceStage(deviceIndex, result.failedOperation, result.failedStage);
+                record(QStringLiteral("failed"), result.failedOperation,
+                    QStringLiteral("DEVICE_KEY_MISSING"));
+                updateProgress(deviceIndex, 100);
+                return;
+            }
+            if (mCancelToken && mCancelToken->load())
+            {
+                result.workflowSuccessful = false;
+                result.failedOperation = QStringLiteral("workflow.cancelled");
+                result.failedStage = QStringLiteral("cancelled before device execution");
+                record(QStringLiteral("cancelled"), result.failedOperation,
+                    QStringLiteral("OPERATION_CANCELLED"));
+                emitDeviceStage(deviceIndex, result.failedOperation, result.failedStage);
+                updateProgress(deviceIndex, 100);
+                return;
+            }
+            emitLog(QStringLiteral("[%1] execution %2 started for %3")
+                .arg(jobId, executionId, device->physicalKey()));
             WorkflowRunner runner(mWorkflows);
+            runner.setCancellationToken(mCancelToken);
+            connect(&runner, &WorkflowRunner::definitionSelected, &runner,
+                [&workflowId, &workflowVersion, &record](const QString& id, const QString& version) {
+                    workflowId = id;
+                    workflowVersion = version;
+                    record(QStringLiteral("stage"), QStringLiteral("workflow.definition"));
+                }, Qt::DirectConnection);
             connect(&runner, &WorkflowRunner::logMessage, &runner,
                 [&emitLog](const QString& message) { emitLog(message); }, Qt::DirectConnection);
             connect(&runner, &WorkflowRunner::transportLogMessage, &runner,
@@ -230,8 +288,18 @@ void WorkflowWorker::run()
                 [&updateProgress, deviceIndex](int percent) { updateProgress(deviceIndex, percent); },
                 Qt::DirectConnection);
             connect(&runner, &WorkflowRunner::stageChanged, &runner,
-                [&emitStage](const QString& operation, const QString& stage) {
+                [&emitStage, &emitDeviceStage, &record, &flashMayHaveStarted,
+                    deviceIndex](const QString& operation, const QString& stage) {
+                    if (operation == QStringLiteral("firmware.flash"))
+                        flashMayHaveStarted = true;
+                    record(QStringLiteral("stage"), operation);
                     emitStage(operation, stage);
+                    emitDeviceStage(deviceIndex, operation, stage);
+                }, Qt::DirectConnection);
+            connect(&runner, &WorkflowRunner::stepCompleted, &runner,
+                [&record, &completedOperationId](const QString& operation) {
+                    completedOperationId = operation;
+                    record(QStringLiteral("stepCompleted"), operation);
                 }, Qt::DirectConnection);
             connect(&runner, &WorkflowRunner::failureStage, &runner,
                 [&result](const QString& operation, const QString& stage) {
@@ -244,8 +312,11 @@ void WorkflowWorker::run()
                 }, Qt::DirectConnection);
 
             result.workflowSuccessful = runner.run(mAction, {device}, mParameters);
+            result.workflowError = runner.lastError();
 
             emitStage(QStringLiteral("device.refreshIdentity"), QStringLiteral("refresh identity"));
+            emitDeviceStage(deviceIndex, QStringLiteral("device.refreshIdentity"),
+                QStringLiteral("refresh identity"));
             DeviceIdentity expected = device->identity();
             expected.type = 0;
             expected.version = 0;
@@ -280,16 +351,30 @@ void WorkflowWorker::run()
                 emitTransportLog(QStringLiteral("[%1] %2")
                     .arg(device->identity().typeHex(), rawResponse));
             updateProgress(deviceIndex, 100);
-        }
-    };
-
-    for (int workerIndex = 0; workerIndex < workerCount; ++workerIndex)
-    {
-        threads.emplace_back(runNextDevices);
-    }
-
-    for (std::thread& thread : threads)
-        thread.join();
+            if (!result.workflowSuccessful || !result.refreshSuccessful)
+                emitDeviceStage(deviceIndex,
+                    result.failedOperation.isEmpty() ? QStringLiteral("device.refreshIdentity")
+                        : result.failedOperation,
+                    result.failedStage.isEmpty() ? result.refreshError : result.failedStage);
+            const bool cancelled = mCancelToken && mCancelToken->load();
+            record(result.workflowSuccessful && result.refreshSuccessful
+                    ? QStringLiteral("succeeded") : cancelled
+                        ? flashMayHaveStarted ? QStringLiteral("interrupted")
+                            : QStringLiteral("cancelled")
+                        : QStringLiteral("failed"),
+                result.failedOperation.isEmpty() ? QStringLiteral("device.refreshIdentity")
+                    : result.failedOperation,
+                result.workflowSuccessful && result.refreshSuccessful ? QString()
+                    : cancelled ? flashMayHaveStarted ? QStringLiteral("EXECUTION_INTERRUPTED")
+                        : QStringLiteral("OPERATION_CANCELLED")
+                    : !result.workflowSuccessful ? result.workflowError.isValid()
+                        ? result.workflowError.code : QStringLiteral("OPERATION_FAILED")
+                        : QStringLiteral("IDENTITY_REFRESH_FAILED"));
+            emitLog(QStringLiteral("[%1] execution %2 %3")
+                .arg(jobId, executionId,
+                    result.workflowSuccessful && result.refreshSuccessful
+                        ? QStringLiteral("succeeded") : QStringLiteral("failed")));
+    });
 
     bool workflowSuccessful = true;
     bool refreshSuccessful = true;
@@ -312,6 +397,10 @@ void WorkflowWorker::run()
         refreshSuccessful = result.refreshSuccessful && refreshSuccessful;
         if (result.hasRefreshedIdentity)
             emit identityRefreshed(deviceIndex, result.refreshedIdentity);
+        emit deviceResult(deviceIndex, result.workflowSuccessful && result.refreshSuccessful,
+            result.failedOperation.isEmpty() ? QStringLiteral("device.refreshIdentity")
+                : result.failedOperation,
+            result.failedStage.isEmpty() ? result.refreshError : result.failedStage);
     }
 
     const bool successful = workflowSuccessful && refreshSuccessful;

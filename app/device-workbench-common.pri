@@ -12,11 +12,13 @@ SOURCES += \
     src/base_device.cpp \
     src/catalog.cpp \
     src/device.cpp \
-    src/devices/boc_v12_device.cpp \
     src/discovery.cpp \
+    src/execution_journal.cpp \
     src/firmware_flash_strategy.cpp \
+    src/job_scheduler.cpp \
     src/main.cpp \
     src/main_window.cpp \
+    src/operation_registry.cpp \
     src/service_container.cpp \
     src/transport/unicorn_ascii_transport.cpp \
     src/workers.cpp \
@@ -30,11 +32,14 @@ HEADERS += \
     src/catalog.h \
     src/device.h \
     src/device_transport.h \
-    src/devices/boc_v12_device.h \
+    src/device_session.h \
     src/discovery.h \
+    src/execution_journal.h \
     src/firmware_flash_strategy.h \
+    src/job_scheduler.h \
     src/firmware_access_policy.h \
     src/main_window.h \
+    src/operation_registry.h \
     src/models.h \
     src/service_container.h \
     src/transport/unicorn_ascii_transport.h \

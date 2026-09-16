@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
+#include <utility>
 
 bool ActionRepository::load(const QString& fileName, QString* error)
 {
@@ -18,24 +19,44 @@ bool ActionRepository::load(const QString& fileName, QString* error)
         return false;
     }
 
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    if (!doc.isObject())
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject())
     {
         if (error)
             *error = QStringLiteral("Actions %1 is not a JSON object").arg(fileName);
         return false;
     }
+    const QJsonObject root = doc.object();
+    if (!root.value(QStringLiteral("schemaVersion")).isDouble()
+        || root.value(QStringLiteral("schemaVersion")).toDouble() != 1.0
+        || !root.value(QStringLiteral("actions")).isArray())
+    {
+        if (error)
+            *error = QStringLiteral("CONFIG_INVALID_SCHEMA: actions require schemaVersion 1 and an actions array");
+        return false;
+    }
 
-    mActions.clear();
-    const QJsonArray actions = doc.object().value(QStringLiteral("actions")).toArray();
+    QVector<ActionSpec> loaded;
+    QSet<QString> ids;
+    const QJsonArray actions = root.value(QStringLiteral("actions")).toArray();
     for (const QJsonValue& value : actions)
     {
         const QJsonObject obj = value.toObject();
         ActionSpec action;
-        action.id = obj.value(QStringLiteral("id")).toString();
+        action.id = obj.value(QStringLiteral("id")).toString().trimmed();
         action.title = obj.value(QStringLiteral("title")).toString(action.id);
-        action.workflow = obj.value(QStringLiteral("workflow")).toString();
+        action.workflow = obj.value(QStringLiteral("workflow")).toString().trimmed();
         action.selection = obj.value(QStringLiteral("selection")).toString(QStringLiteral("many"));
+        if (action.id.isEmpty() || ids.contains(action.id) || action.workflow.isEmpty()
+            || (action.selection != QStringLiteral("single")
+                && action.selection != QStringLiteral("many")))
+        {
+            if (error)
+                *error = QStringLiteral("Invalid or duplicate action: %1").arg(action.id);
+            return false;
+        }
+        ids.insert(action.id);
 
         const QJsonObject when = obj.value(QStringLiteral("when")).toObject();
         const QJsonArray capabilities = when.value(QStringLiteral("capabilitiesAll")).toArray();
@@ -43,7 +64,16 @@ bool ActionRepository::load(const QString& fileName, QString* error)
             action.requiredCapabilities.append(cap.toString());
         const QJsonArray states = when.value(QStringLiteral("statesAny")).toArray();
         for (const QJsonValue& state : states)
+        {
+            if (state.toString() != QStringLiteral("application")
+                && state.toString() != QStringLiteral("bootloader"))
+            {
+                if (error)
+                    *error = QStringLiteral("Invalid state in action %1").arg(action.id);
+                return false;
+            }
             action.allowedStates.append(state.toString());
+        }
 
         const QJsonArray inputs = obj.value(QStringLiteral("inputs")).toArray();
         for (const QJsonValue& inputValue : inputs)
@@ -53,13 +83,31 @@ bool ActionRepository::load(const QString& fileName, QString* error)
                 action.target = input.value(QStringLiteral("target")).toString();
         }
 
-        if (!action.id.isEmpty() && AppEdition::allowsAction(action.id))
-            mActions.append(action);
+        if (AppEdition::allowsAction(action.id))
+            loaded.append(action);
     }
+    if (loaded.isEmpty())
+    {
+        if (error)
+            *error = QStringLiteral("Actions %1 has no actions for this edition").arg(fileName);
+        return false;
+    }
+    mActions = std::move(loaded);
     return true;
 }
 
 QVector<ActionSpec> ActionRepository::actionsForDevice(const DeviceIdentity& device) const
+{
+    QVector<ActionSpec> result;
+    for (const ActionSpec& action : mActions)
+    {
+        if (isActionAllowed(action, device))
+            result.append(action);
+    }
+    return result;
+}
+
+QVector<ActionSpec> ActionRepository::actionsForDevice(const DeviceBase& device) const
 {
     QVector<ActionSpec> result;
     for (const ActionSpec& action : mActions)
@@ -84,7 +132,7 @@ QVector<ActionSpec> ActionRepository::commonActions(const QVector<std::shared_pt
         bool allowedForAll = true;
         for (const std::shared_ptr<DeviceBase>& device : devices)
         {
-            if (!device || !isActionAllowed(action, device->identity()))
+            if (!device || !isActionAllowed(action, *device))
             {
                 allowedForAll = false;
                 break;
@@ -94,6 +142,25 @@ QVector<ActionSpec> ActionRepository::commonActions(const QVector<std::shared_pt
             result.append(action);
     }
     return result;
+}
+
+bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceBase& device) const
+{
+    const auto& profile = device.profile();
+    if (!profile)
+        return isActionAllowed(action, device.identity());
+    if (action.id == QStringLiteral("device.ping"))
+        return true;
+    if (!action.allowedStates.isEmpty()
+        && !action.allowedStates.contains(device.identity().state))
+        return false;
+    const QSet<QString> capabilities(profile->capabilities.cbegin(), profile->capabilities.cend());
+    for (const QString& required : action.requiredCapabilities)
+    {
+        if (!capabilities.contains(required))
+            return false;
+    }
+    return true;
 }
 
 bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceIdentity& device) const
@@ -107,7 +174,7 @@ bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceIde
     if (!action.allowedStates.isEmpty() && !action.allowedStates.contains(device.state))
         return false;
 
-    const QSet<QString> caps = QSet<QString>::fromList(device.capabilities);
+    const QSet<QString> caps(device.capabilities.cbegin(), device.capabilities.cend());
     for (const QString& required : action.requiredCapabilities)
     {
         if (!caps.contains(required))

@@ -7,6 +7,7 @@
 
 #include <QObject>
 #include <QVariantMap>
+#include <atomic>
 #include <memory>
 
 class WorkflowRunner : public QObject
@@ -15,6 +16,8 @@ class WorkflowRunner : public QObject
 public:
     explicit WorkflowRunner(WorkflowRepository* workflows = nullptr, QObject* parent = nullptr);
     void setWorkflowRepository(WorkflowRepository* workflows);
+    void setCancellationToken(std::shared_ptr<std::atomic_bool> token);
+    const OperationError& lastError() const { return mLastError; }
 
     bool run(const ActionSpec& action, const QVector<std::shared_ptr<DeviceBase>>& devices, const QVariantMap& parameters = {});
 
@@ -23,10 +26,14 @@ signals:
     void transportLogMessage(QString message);
     void progressChanged(int percent);
     void stageChanged(QString operation, QString stage);
+    void stepCompleted(QString operation);
     void failureStage(QString operation, QString stage);
+    void definitionSelected(QString workflowId, QString version);
 
 private:
     WorkflowRepository* mWorkflows = nullptr;
+    std::shared_ptr<std::atomic_bool> mCancelToken;
+    OperationError mLastError;
 };
 
 #endif // DEVICE_WORKBENCH_WORKFLOW_H

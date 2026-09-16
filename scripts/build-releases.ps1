@@ -70,6 +70,10 @@ foreach ($currentEdition in $editions) {
     if (-not (Test-Path -LiteralPath $executable)) {
         throw "Build completed without the expected executable: $executable"
     }
+    & $executable --check-config
+    if ($LASTEXITCODE -ne 0) {
+        throw "Embedded configuration validation failed for $currentEdition"
+    }
     if (Test-Path -LiteralPath $deployTool) {
         & $deployTool --release --no-translations $executable
         if ($LASTEXITCODE -ne 0) { throw "windeployqt failed for $currentEdition" }

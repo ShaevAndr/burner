@@ -4,11 +4,14 @@
 #include "base_device.h"
 #include "firmware_flash_strategy.h"
 #include "models.h"
+#include "operation_registry.h"
 
 #include <QHash>
+#include <QReadWriteLock>
 #include <QVariantMap>
 #include <QVector>
 #include <functional>
+#include <memory>
 
 struct WorkflowStep
 {
@@ -19,11 +22,13 @@ struct WorkflowStep
     QString skippedLog;
     QVariantMap arguments;
     int retryAttempts = 1;
+    const OperationContract* contract = nullptr;
 };
 
 struct WorkflowDefinition
 {
     QString id;
+    QString version;
     QVector<WorkflowStep> steps;
 };
 
@@ -33,7 +38,9 @@ struct WorkflowCallbacks
     std::function<void(const QString&)> transportLogMessage;
     std::function<void(int)> progressChanged;
     std::function<void(const QString&, const QString&)> stageChanged;
+    std::function<void(const QString&)> stepCompleted;
     std::function<void()> processEvents;
+    std::function<bool()> shouldCancel;
 };
 
 struct WorkflowContext
@@ -59,12 +66,14 @@ class WorkflowRepository
 {
 public:
     bool load(const QString& fileName, QString* error = nullptr);
-    const WorkflowDefinition* definitionFor(const ActionSpec& action) const;
-    const WorkflowDefinition* definitionForId(const QString& workflowId) const;
-    bool isEmpty() const { return mDefinitions.isEmpty(); }
+    std::shared_ptr<const WorkflowDefinition> snapshotFor(const ActionSpec& action) const;
+    std::shared_ptr<const WorkflowDefinition> snapshotForId(const QString& workflowId) const;
+    void replaceWith(const WorkflowRepository& other);
+    bool isEmpty() const;
 
 private:
-    QHash<QString, WorkflowDefinition> mDefinitions;
+    mutable QReadWriteLock mLock;
+    QHash<QString, std::shared_ptr<const WorkflowDefinition>> mDefinitions;
 };
 
 class WorkflowExecution
@@ -78,6 +87,7 @@ public:
     bool next(DeviceBase& device);
     bool isFinished() const { return mFinished; }
     bool isSuccessful() const { return mSuccessful; }
+    const OperationError& error() const { return mError; }
 
 private:
     void log(const QString& message) const;
@@ -94,7 +104,6 @@ private:
         const WorkflowStep& step,
         const DeviceOperation& operation,
         const QVariantMap& arguments);
-    bool isRuntimeStep(const QString& operation) const;
     bool executeRuntimeStep(DeviceBase& device, const WorkflowStep& step);
     bool executeDeviceStep(DeviceBase& device, const WorkflowStep& step);
     bool verifyFlashPages(DeviceBase& device);
@@ -106,6 +115,7 @@ private:
     QVariantMap mParameters;
     WorkflowCallbacks mCallbacks;
     WorkflowContext mContext;
+    OperationError mError;
     int mNextStep = 0;
     bool mFinished = false;
     bool mSuccessful = true;

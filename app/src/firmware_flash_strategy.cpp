@@ -3,6 +3,7 @@
 #include <QMap>
 #include <QThread>
 #include <algorithm>
+#include <utility>
 
 namespace
 {
@@ -19,10 +20,11 @@ bool parseIntelHex(const QByteArray& fileData,
     int flashOffset,
     int pageSize,
     IntelHexImage* image,
-    QString* error)
+    QString* error,
+    bool syntaxOnly = false)
 {
-    if (!image || flashSize <= 0 || flashOffset < 0
-        || flashOffset >= flashSize || pageSize <= 0)
+    if (!image || (!syntaxOnly && (flashSize <= 0 || flashOffset < 0
+        || flashOffset >= flashSize || pageSize <= 0)))
     {
         if (error)
             *error = QStringLiteral("Invalid Intel HEX target range");
@@ -83,6 +85,11 @@ bool parseIntelHex(const QByteArray& fileData,
         const quint8 type = quint8(record.at(3));
         if (type == 0x00)
         {
+            if (syntaxOnly)
+            {
+                image->dataBytes += byteCount;
+                continue;
+            }
             const quint64 absoluteAddress = quint64(upperAddress) + offset;
             const quint64 rangeBegin = addressBase;
             const quint64 rangeEnd = rangeBegin + quint64(flashSize - flashOffset);
@@ -139,7 +146,7 @@ bool parseIntelHex(const QByteArray& fileData,
         }
     }
 
-    if (!eofSeen || image->pages.isEmpty())
+    if (!eofSeen || (syntaxOnly ? image->dataBytes == 0 : image->pages.isEmpty()))
     {
         if (error)
             *error = !eofSeen
@@ -148,6 +155,13 @@ bool parseIntelHex(const QByteArray& fileData,
         return false;
     }
     return true;
+}
+
+bool isIntelHex(const FirmwareFlashPlan& plan)
+{
+    return plan.artifact.format.compare(QStringLiteral("intelHex"), Qt::CaseInsensitive) == 0
+        || plan.fileName.endsWith(QStringLiteral(".hex"), Qt::CaseInsensitive)
+        || plan.fileName.endsWith(QStringLiteral(".ldr"), Qt::CaseInsensitive);
 }
 
 void call(const std::function<void(const QString&)>& callback, const QString& message)
@@ -161,10 +175,11 @@ class PageFlashStrategy final : public FirmwareFlashStrategy
 public:
     QString id() const override { return QStringLiteral("page-flash"); }
 
-    bool flash(DeviceBase& device,
+    bool prepare(DeviceBase& device,
         FirmwareFlashPlan& plan,
         const FirmwareFlashCallbacks& callbacks) const override
     {
+        plan.writePlan.reset();
         const DeviceIdentity& identity = device.identity();
         QVector<FlashMemoryParams> params;
         QString error;
@@ -207,12 +222,11 @@ public:
 
         plan.pageSize = params.at(flashNum).pageSize;
         const int pagesCount = params.at(flashNum).pagesCount;
-        const bool isIntelHex = plan.artifact.format.compare(QStringLiteral("intelHex"), Qt::CaseInsensitive) == 0
-            || plan.fileName.endsWith(QStringLiteral(".hex"), Qt::CaseInsensitive)
-            || plan.fileName.endsWith(QStringLiteral(".ldr"), Qt::CaseInsensitive);
-        plan.expectedPageNumbers.clear();
-        plan.expectedPages.clear();
-        if (isIntelHex)
+        const bool intelHex = isIntelHex(plan);
+        FirmwareWritePlan prepared;
+        prepared.flashNum = flashNum;
+        prepared.pageSize = plan.pageSize;
+        if (intelHex)
         {
             const int flashSize = pagesCount * plan.pageSize;
             IntelHexImage image;
@@ -224,8 +238,8 @@ public:
             }
             for (auto pageIt = image.pages.cbegin(); pageIt != image.pages.cend(); ++pageIt)
             {
-                plan.expectedPageNumbers.append(pageIt.key());
-                plan.expectedPages.append(pageIt.value());
+                prepared.pageNumbers.append(pageIt.key());
+                prepared.pages.append(pageIt.value());
             }
             plan.data.clear();
             call(callbacks.log, QStringLiteral("[%1] Intel HEX loaded %2 data bytes into %3 flash pages from base 0x%4; ignored %5 out-of-range bytes")
@@ -253,29 +267,56 @@ public:
                 std::copy(plan.data.constBegin() + sourceOffset,
                     plan.data.constBegin() + sourceOffset + chunkSize,
                     page.begin() + targetOffset);
-                plan.expectedPageNumbers.append(firstPage + pageIndex);
-                plan.expectedPages.append(page);
+                prepared.pageNumbers.append(firstPage + pageIndex);
+                prepared.pages.append(page);
             }
         }
 
-        if (plan.expectedPages.isEmpty()
-            || plan.expectedPageNumbers.size() != plan.expectedPages.size())
+        if (prepared.pages.isEmpty()
+            || prepared.pageNumbers.size() != prepared.pages.size())
         {
             call(callbacks.log, QStringLiteral("[%1] firmware contains no writable flash pages")
                 .arg(identity.typeHex()));
             return false;
         }
 
-        const int pagesToWrite = plan.expectedPages.size();
-        plan.firstWrittenPage = plan.expectedPageNumbers.first();
+        plan.writePlan = std::make_shared<const FirmwareWritePlan>(std::move(prepared));
+        call(callbacks.log, QStringLiteral("[%1] prepared %2 populated pages for flash #%3")
+            .arg(identity.typeHex()).arg(plan.writePlan->pages.size()).arg(flashNum));
+        return true;
+    }
+
+    bool flash(DeviceBase& device,
+        const FirmwareFlashPlan& plan,
+        const FirmwareFlashCallbacks& callbacks) const override
+    {
+        const DeviceIdentity& identity = device.identity();
+        if (!plan.writePlan || plan.writePlan->pages.isEmpty())
+        {
+            call(callbacks.log, QStringLiteral("[%1] flash write requested without a prepared page plan")
+                .arg(identity.typeHex()));
+            return false;
+        }
+
+        const FirmwareWritePlan& prepared = *plan.writePlan;
+        const int pagesToWrite = prepared.pages.size();
+        const int flashNum = prepared.flashNum;
+        QString error;
+        QString raw;
         call(callbacks.log, QStringLiteral("[%1] writing %2 populated pages to flash #%3, page numbers %4-%5")
             .arg(identity.typeHex()).arg(pagesToWrite).arg(flashNum)
-            .arg(plan.expectedPageNumbers.first()).arg(plan.expectedPageNumbers.last()));
+            .arg(prepared.pageNumbers.first()).arg(prepared.pageNumbers.last()));
 
         for (int pageIndex = 0; pageIndex < pagesToWrite; ++pageIndex)
         {
-            const int pageNum = plan.expectedPageNumbers.at(pageIndex);
-            const QByteArray& page = plan.expectedPages.at(pageIndex);
+            if (callbacks.shouldCancel && callbacks.shouldCancel())
+            {
+                call(callbacks.log, QStringLiteral("[%1] flash interrupted before page %2")
+                    .arg(identity.typeHex()).arg(prepared.pageNumbers.at(pageIndex)));
+                return false;
+            }
+            const int pageNum = prepared.pageNumbers.at(pageIndex);
+            const QByteArray& page = prepared.pages.at(pageIndex);
 
             raw.clear();
             if (!device.flashWritePage(flashNum, pageNum, page, &error, &raw))
@@ -304,8 +345,15 @@ class TestNoWriteStrategy final : public FirmwareFlashStrategy
 public:
     QString id() const override { return QStringLiteral("test-no-write"); }
 
+    bool prepare(DeviceBase&, FirmwareFlashPlan& plan,
+        const FirmwareFlashCallbacks&) const override
+    {
+        plan.writePlan = std::make_shared<const FirmwareWritePlan>();
+        return true;
+    }
+
     bool flash(DeviceBase& device,
-        FirmwareFlashPlan&,
+        const FirmwareFlashPlan&,
         const FirmwareFlashCallbacks& callbacks) const override
     {
         call(callbacks.log, QStringLiteral("[%1] writeFlash is intentionally not sent to hardware")
@@ -315,6 +363,20 @@ public:
         return true;
     }
 };
+}
+
+bool validateFirmwareImage(const FirmwareFlashPlan& plan, QString* error)
+{
+    if (plan.data.isEmpty())
+    {
+        if (error)
+            *error = QStringLiteral("Firmware file is empty");
+        return false;
+    }
+    if (!isIntelHex(plan))
+        return true;
+    IntelHexImage image;
+    return parseIntelHex(plan.data, 0, 0, 0, 0, &image, error, true);
 }
 
 const FirmwareFlashStrategy* FirmwareFlashStrategyRegistry::find(const QString& strategyId)
