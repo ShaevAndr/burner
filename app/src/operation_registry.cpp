@@ -81,7 +81,8 @@ bool OperationContract::validate(const QVariantMap& step, QString* error) const
         }
     }
     if ((id == QStringLiteral("device.writeProductionDate")
-            || id == QStringLiteral("device.writeSerialNumber"))
+            || id == QStringLiteral("device.writeSerialNumber")
+            || id == QStringLiteral("device.verifyRegister"))
         && !step.contains(QStringLiteral("value"))
         && !step.contains(QStringLiteral("valueFrom")))
     {
@@ -96,6 +97,19 @@ bool OperationContract::validate(const QVariantMap& step, QString* error) const
         {
             if (error)
                 *error = QStringLiteral("Unknown valueFrom '%1' for operation %2").arg(source, id);
+            return false;
+        }
+    }
+    if (id == QStringLiteral("device.verifyRegister"))
+    {
+        const QString registerName = step.value(QStringLiteral("register")).toString();
+        if ((registerName != QStringLiteral("productionDate")
+                && registerName != QStringLiteral("serialNumber"))
+            || (step.contains(QStringLiteral("valueFrom"))
+                && step.value(QStringLiteral("valueFrom")).toString() != registerName))
+        {
+            if (error)
+                *error = QStringLiteral("Invalid register or valueFrom for operation %1").arg(id);
             return false;
         }
     }
@@ -215,6 +229,33 @@ OperationRegistry::OperationRegistry()
                     std::numeric_limits<qint32>::max())},
             {QStringLiteral("valueFrom"), string()}}, OperationSideEffect::Destructive,
             OperationIdempotency::Conditional);
+    device(QStringLiteral("device.verifyRegister"),
+        [](DeviceBase& item, const QVariantMap& args, QString* error, QString* raw) {
+            const QString registerName = args.value(QStringLiteral("register")).toString();
+            const int registerIndex = registerName == QStringLiteral("productionDate")
+                ? item.productionDateRegister() : item.serialNumberRegister();
+            if (registerIndex < 0)
+            {
+                if (error)
+                    *error = QStringLiteral("Register %1 is not configured").arg(registerName);
+                return false;
+            }
+            qint32 actual = 0;
+            if (!item.readInt(quint16(registerIndex), &actual, error, raw))
+                return false;
+            const qint32 expected = args.value(QStringLiteral("value")).toInt();
+            if (actual != expected)
+            {
+                if (error)
+                    *error = QStringLiteral("Register %1 readback mismatch: expected %2, got %3")
+                        .arg(registerName).arg(expected).arg(actual);
+                return false;
+            }
+            return true;
+        }, {{QStringLiteral("register"), string(true)},
+            {QStringLiteral("value"), integer(std::numeric_limits<qint32>::min(),
+                std::numeric_limits<qint32>::max())},
+            {QStringLiteral("valueFrom"), string()}}, OperationSideEffect::None);
     device(QStringLiteral("device.ping"),
         [](DeviceBase& item, const QVariantMap& args, QString* error, QString* raw) {
             qint32 value = 0;

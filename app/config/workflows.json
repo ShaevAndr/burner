@@ -51,6 +51,12 @@
           "retry": 4
         },
         {
+          "op": "device.verifyRegister",
+          "register": "productionDate",
+          "valueFrom": "productionDate",
+          "label": "проверка даты"
+        },
+        {
           "op": "sleep",
           "message": "wait 1 second before final reset",
           "ms": 1000
@@ -115,6 +121,12 @@
           "message": "int[10] = {value}",
           "valueFrom": "serialNumber",
           "retry": 4
+        },
+        {
+          "op": "device.verifyRegister",
+          "register": "serialNumber",
+          "valueFrom": "serialNumber",
+          "label": "проверка номера"
         },
         {
           "op": "sleep",

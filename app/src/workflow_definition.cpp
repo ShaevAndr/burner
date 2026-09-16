@@ -18,6 +18,7 @@
 #include <QThread>
 #include <QTime>
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 static QString resolveArtifactPath(const QString& relativePath)
@@ -162,6 +163,11 @@ static OperationError operationError(const QString& operationId,
     else if (operationId == QStringLiteral("firmware.verifyInstalledVersion"))
     {
         error.code = QStringLiteral("APPLICATION_VERSION_MISMATCH");
+        error.category = QStringLiteral("verification");
+    }
+    else if (operationId == QStringLiteral("device.verifyRegister"))
+    {
+        error.code = QStringLiteral("REGISTER_READBACK_FAILED");
         error.category = QStringLiteral("verification");
     }
     else if (operationId == QStringLiteral("flash.validateArtifact")
@@ -340,6 +346,40 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
                 *error = QStringLiteral("CONFIG_UNSAFE_FLASH_WORKFLOW: %1 requires installed version "
                     "verification after application reappears").arg(definition.id);
             return false;
+        }
+        for (int index = 0; index < definition.steps.size(); ++index)
+        {
+            const QString& writeOp = definition.steps.at(index).op;
+            const QString registerName = writeOp == QStringLiteral("device.writeProductionDate")
+                ? QStringLiteral("productionDate")
+                : writeOp == QStringLiteral("device.writeSerialNumber")
+                    ? QStringLiteral("serialNumber") : QString();
+            if (registerName.isEmpty())
+                continue;
+            bool verified = false;
+            for (int next = index + 1; next < definition.steps.size(); ++next)
+            {
+                const WorkflowStep& candidate = definition.steps.at(next);
+                if (candidate.op == QStringLiteral("device.verifyRegister")
+                    && candidate.skipIfState.isEmpty()
+                    && candidate.arguments.value(QStringLiteral("register")).toString()
+                        == registerName
+                    && candidate.arguments.value(QStringLiteral("valueFrom")).toString()
+                        == registerName)
+                {
+                    verified = true;
+                    break;
+                }
+                if (candidate.contract->sideEffect != OperationSideEffect::None)
+                    break;
+            }
+            if (!verified)
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_UNVERIFIED_SETTING: %1 must read back %2 before another device change")
+                        .arg(definition.id, registerName);
+                return false;
+            }
         }
 
         loaded.insert(definition.id, definition);
@@ -716,6 +756,16 @@ bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowSte
         const QDate productionDate = mParameters.value(QStringLiteral("productionDate")).toDate();
         const QDate effectiveDate = productionDate.isValid() ? productionDate : QDate::currentDate();
         mContext.productionTimestamp = QDateTime(effectiveDate, QTime(0, 0), Qt::LocalTime).toSecsSinceEpoch();
+        if (mContext.productionTimestamp < std::numeric_limits<qint32>::min()
+            || mContext.productionTimestamp > std::numeric_limits<qint32>::max())
+        {
+            mError = operationError(step.op, QStringLiteral("Production date exceeds 32-bit register range"));
+            mError.code = QStringLiteral("INVALID_PRODUCTION_DATE");
+            mError.category = QStringLiteral("input");
+            log(QStringLiteral("[%1] production date is outside the register range")
+                .arg(identity.typeHex()));
+            return false;
+        }
         log(QStringLiteral("[%1] preparing production date update for %2")
             .arg(identity.typeHex(), effectiveDate.toString(QStringLiteral("dd.MM.yyyy"))));
         return true;
@@ -1437,9 +1487,11 @@ bool WorkflowExecution::executeDeviceStep(DeviceBase& device, const WorkflowStep
 
     // A direct identity refresh may not contain a serial number (for example,
     // when UDP discovery is unavailable and the device is reached over TCP).
-    // Keep the in-memory identity in sync as soon as the write succeeds so the
-    // refresh can retain the actual requested number instead of losing it.
-    if (step.op == QStringLiteral("device.writeSerialNumber"))
+    // Update the in-memory identity only after readback confirms the write, so
+    // a later refresh can retain the requested number when TCP omits it.
+    if (step.op == QStringLiteral("device.verifyRegister")
+        && arguments.value(QStringLiteral("register")).toString()
+            == QStringLiteral("serialNumber"))
     {
         DeviceIdentity updated = device.identity();
         updated.serialNumber = QString::number(arguments.value(QStringLiteral("value")).toInt());

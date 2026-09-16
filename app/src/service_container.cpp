@@ -15,6 +15,8 @@ bool validateConfiguration(const CatalogService& catalog,
     const WorkflowRepository& workflows,
     QString* error)
 {
+    if (!actions.validateAgainstProfiles(catalog.profiles(), error))
+        return false;
     for (const ActionSpec& action : actions.allActions())
     {
         if (!workflows.snapshotFor(action))

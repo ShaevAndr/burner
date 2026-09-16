@@ -96,6 +96,62 @@ bool ActionRepository::load(const QString& fileName, QString* error)
     return true;
 }
 
+bool ActionRepository::validateAgainstProfiles(
+    const QVector<std::shared_ptr<const DeviceProfile>>& profiles, QString* error) const
+{
+    if (error)
+        error->clear();
+    for (const ActionSpec& action : mActions)
+    {
+        bool applicable = false;
+        for (const auto& profile : profiles)
+        {
+            if (!profile)
+                continue;
+            const QSet<QString> capabilities(profile->capabilities.cbegin(),
+                profile->capabilities.cend());
+            bool supportsAction = true;
+            for (const QString& required : action.requiredCapabilities)
+            {
+                if (!capabilities.contains(required))
+                {
+                    supportsAction = false;
+                    break;
+                }
+            }
+            if (!supportsAction)
+                continue;
+            applicable = true;
+            if (action.target.isEmpty())
+                continue;
+            bool hasArtifact = false;
+            for (const FirmwareArtifact& artifact : profile->firmwareArtifacts)
+            {
+                if (artifact.target == action.target && !artifact.relativePath.isEmpty())
+                {
+                    hasArtifact = true;
+                    break;
+                }
+            }
+            if (!hasArtifact)
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_ACTION_MISSING_ARTIFACT: action %1 targets %2 on profile %3")
+                        .arg(action.id, action.target, profile->id);
+                return false;
+            }
+        }
+        if (!applicable)
+        {
+            if (error)
+                *error = QStringLiteral("CONFIG_ACTION_UNAVAILABLE: action %1 has no matching profile")
+                    .arg(action.id);
+            return false;
+        }
+    }
+    return true;
+}
+
 QVector<ActionSpec> ActionRepository::actionsForDevice(const DeviceIdentity& device) const
 {
     QVector<ActionSpec> result;

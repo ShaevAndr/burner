@@ -12,6 +12,8 @@ class ActionRepository
 {
 public:
     bool load(const QString& fileName, QString* error = nullptr);
+    bool validateAgainstProfiles(const QVector<std::shared_ptr<const DeviceProfile>>& profiles,
+        QString* error = nullptr) const;
     QVector<ActionSpec> actionsForDevice(const DeviceIdentity& device) const;
     QVector<ActionSpec> actionsForDevice(const DeviceBase& device) const;
     QVector<ActionSpec> commonActions(const QVector<std::shared_ptr<DeviceBase>>& devices) const;
