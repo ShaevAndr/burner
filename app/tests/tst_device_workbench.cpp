@@ -358,7 +358,8 @@ private slots:
     void workflowRestoresApplicationAfterProductionDateFailure();
     void workflowSkipsProtectedSettingsWithoutFactoryKey();
     void workflowWorkerRunsDevicesInParallel();
-    void workflowWorkerLimitsParallelDevicesToFive();
+    void workflowWorkerHonorsParallelLimit_data();
+    void workflowWorkerHonorsParallelLimit();
     void schedulerSerializesSamePhysicalDevice();
     void catalogDetectsDeviceState();
     void workflowWritesSerialNumberRegisterInBootloader();
@@ -1046,8 +1047,37 @@ void DeviceWorkbenchTest::workflowWorkerRunsDevicesInParallel()
     QCOMPARE(secondTransport->noReplyWrites.size(), 1);
 }
 
-void DeviceWorkbenchTest::workflowWorkerLimitsParallelDevicesToFive()
+void DeviceWorkbenchTest::workflowWorkerHonorsParallelLimit_data()
 {
+    QTest::addColumn<int>("requestedLimit");
+    QTest::addColumn<int>("expectedLimit");
+    QTest::newRow("default") << 0 << WorkflowWorker::MaxParallelDevices;
+    QTest::newRow("configured-two") << 2 << 2;
+    QTest::newRow("clamped") << 20 << WorkflowWorker::MaxParallelDevices;
+    QTest::newRow("invalid") << -1 << WorkflowWorker::MaxParallelDevices;
+}
+
+void DeviceWorkbenchTest::workflowWorkerHonorsParallelLimit()
+{
+    QFETCH(int, requestedLimit);
+    QFETCH(int, expectedLimit);
+    struct EnvironmentRestore
+    {
+        bool wasSet = qEnvironmentVariableIsSet("BURNER_MAX_PARALLEL_DEVICES");
+        QByteArray previous = qgetenv("BURNER_MAX_PARALLEL_DEVICES");
+        ~EnvironmentRestore()
+        {
+            if (wasSet)
+                qputenv("BURNER_MAX_PARALLEL_DEVICES", previous);
+            else
+                qunsetenv("BURNER_MAX_PARALLEL_DEVICES");
+        }
+    } restoreEnvironment;
+    if (requestedLimit == 0)
+        qunsetenv("BURNER_MAX_PARALLEL_DEVICES");
+    else
+        qputenv("BURNER_MAX_PARALLEL_DEVICES", QByteArray::number(requestedLimit));
+
     WorkflowRepository workflows;
     QString error;
     QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &error),
@@ -1089,7 +1119,7 @@ void DeviceWorkbenchTest::workflowWorkerLimitsParallelDevicesToFive()
 
     QCOMPARE(finishedSpy.count(), 1);
     QVERIFY(finishedSpy.first().at(0).toBool());
-    QCOMPARE(parallelState->maximumActiveCalls, WorkflowWorker::MaxParallelDevices);
+    QCOMPARE(parallelState->maximumActiveCalls, expectedLimit);
     for (const std::shared_ptr<FakeDeviceTransport>& transport : transports)
         QCOMPARE(transport->noReplyWrites.size(), 1);
 }

@@ -19,6 +19,18 @@ constexpr int kIdentityRefreshTimeoutMs = 60000;
 constexpr int kIdentityRefreshPollIntervalMs = 500;
 constexpr int kRunningProgressMaximum = 99;
 
+int configuredParallelLimit()
+{
+    const QByteArray raw = qgetenv("BURNER_MAX_PARALLEL_DEVICES").trimmed();
+    if (raw.isEmpty())
+        return WorkflowWorker::MaxParallelDevices;
+    bool valid = false;
+    const int requested = raw.toInt(&valid);
+    if (!valid || requested < 1)
+        return WorkflowWorker::MaxParallelDevices;
+    return qMin(requested, WorkflowWorker::MaxParallelDevices);
+}
+
 QJsonObject extendedDescriptionObject(const QByteArray& data)
 {
     const int jsonStart = data.indexOf('{');
@@ -204,15 +216,16 @@ void WorkflowWorker::run()
         emit progressChanged(qBound(0, aggregate, kRunningProgressMaximum));
     };
 
-    if (activeDeviceCount > MaxParallelDevices)
+    const int parallelLimit = configuredParallelLimit();
+    if (activeDeviceCount > parallelLimit)
     {
         emitLog(QStringLiteral(
             "Parallel operation limit is %1 device(s); %2 device(s) will wait in queue")
-            .arg(MaxParallelDevices)
-            .arg(activeDeviceCount - MaxParallelDevices));
+            .arg(parallelLimit)
+            .arg(activeDeviceCount - parallelLimit));
     }
 
-    JobScheduler scheduler(MaxParallelDevices);
+    JobScheduler scheduler(parallelLimit);
     ExecutionJournal journal;
     scheduler.run(mDevices, [this, &results, &emitLog, &emitTransportLog,
                                 &emitStage, &emitDeviceStage, &updateProgress, &journal](int deviceIndex,
