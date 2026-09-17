@@ -25,10 +25,20 @@ struct WorkflowStep
     const OperationContract* contract = nullptr;
 };
 
+enum class RecoveryKind { None, LoadApplication, ManualBootloader };
+
+struct RecoveryPlan
+{
+    RecoveryKind kind = RecoveryKind::None;
+    int timeoutMs = 30000;
+    int pollIntervalMs = 500;
+};
+
 struct WorkflowDefinition
 {
     QString id;
     QString version;
+    RecoveryPlan recovery;
     QVector<WorkflowStep> steps;
 };
 

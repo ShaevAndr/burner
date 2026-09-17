@@ -904,7 +904,8 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
     device.productionDateRegister = 9;
 
     ActionSpec action;
-    action.id = QStringLiteral("device.productionDate.update");
+    action.id = QStringLiteral("test.productionDate.update");
+    action.workflow = QStringLiteral("device.production-date.update");
     action.title = QStringLiteral("Обновить дату производства");
 
     auto transport = std::make_shared<FakeDeviceTransport>();
@@ -2343,18 +2344,22 @@ void DeviceWorkbenchTest::workflowReloadKeepsActiveSnapshot()
     QVERIFY(directory.isValid());
     const QString path = directory.filePath(QStringLiteral("workflows.json"));
     const auto writeWorkflow = [&path](const QString& op, const QJsonObject& extra = {},
-        int schemaVersion = 1) {
+        int schemaVersion = 1, const QString& recoveryKind = {}) {
         QJsonObject step = extra;
         step.insert(QStringLiteral("op"), op);
         QJsonArray steps;
         if (op == QStringLiteral("device.reset") || op == QStringLiteral("firmware.flash")
-            || op == QStringLiteral("device.writeSerialNumber"))
+            || op == QStringLiteral("device.writeSerialNumber")
+            || op == QStringLiteral("device.disableLoadApplication"))
             steps.append(QJsonObject{{QStringLiteral("op"), QStringLiteral("device.ensureUuid")}});
         steps.append(step);
+        QJsonObject workflow{{QStringLiteral("id"), QStringLiteral("test.workflow")},
+            {QStringLiteral("steps"), steps}};
+        if (!recoveryKind.isEmpty())
+            workflow.insert(QStringLiteral("recovery"), QJsonObject{
+                {QStringLiteral("kind"), recoveryKind}});
         QJsonObject root{{QStringLiteral("schemaVersion"), schemaVersion},
-            {QStringLiteral("workflows"), QJsonArray{
-            QJsonObject{{QStringLiteral("id"), QStringLiteral("test.workflow")},
-                {QStringLiteral("steps"), steps}}}}};
+            {QStringLiteral("workflows"), QJsonArray{workflow}}};
         QFile file(path);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
             return false;
@@ -2408,7 +2413,20 @@ void DeviceWorkbenchTest::workflowReloadKeepsActiveSnapshot()
     QVERIFY(writeWorkflow(QStringLiteral("device.writeSerialNumber"),
         {{QStringLiteral("value"), 123}}));
     QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_MISSING_RECOVERY")));
+
+    QVERIFY(writeWorkflow(QStringLiteral("device.disableLoadApplication")));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_MISSING_RECOVERY")));
+
+    QVERIFY(writeWorkflow(QStringLiteral("device.writeSerialNumber"),
+        {{QStringLiteral("value"), 123}}, 1, QStringLiteral("loadApplication")));
+    QVERIFY(!repository.load(path, &error));
     QVERIFY(error.contains(QStringLiteral("CONFIG_UNVERIFIED_SETTING")));
+
+    QVERIFY(writeWorkflow(QStringLiteral("log"), {}, 1, QStringLiteral("unknown")));
+    QVERIFY(!repository.load(path, &error));
+    QVERIFY(error.contains(QStringLiteral("CONFIG_INVALID_RECOVERY")));
 
     QVERIFY(writeWorkflow(QStringLiteral("firmware.flash")));
     QVERIFY(!repository.load(path, &error));

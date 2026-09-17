@@ -9,6 +9,7 @@
     },
     {
       "id": "device.production-date.update",
+      "recovery": {"kind": "loadApplication", "timeoutMs": 30000, "pollIntervalMs": 500},
       "steps": [
         {
           "op": "device.ensureUuid"
@@ -82,6 +83,7 @@
     },
     {
       "id": "device.serial-number.update",
+      "recovery": {"kind": "loadApplication", "timeoutMs": 30000, "pollIntervalMs": 500},
       "steps": [
         {
           "op": "device.ensureUuid"
@@ -178,6 +180,7 @@
     },
     {
       "id": "firmware.application.standard",
+      "recovery": {"kind": "manualBootloader"},
       "steps": [
         {
           "op": "device.ensureUuid"
@@ -231,6 +234,7 @@
     },
     {
       "id": "firmware.bootloader.direct",
+      "recovery": {"kind": "manualBootloader"},
       "steps": [
         {
           "op": "device.ensureUuid"
@@ -257,6 +261,7 @@
     },
     {
       "id": "flash.write",
+      "recovery": {"kind": "manualBootloader"},
       "steps": [
         {
           "op": "device.ensureUuid"

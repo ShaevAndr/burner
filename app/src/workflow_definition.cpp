@@ -239,6 +239,39 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
                 *error = QStringLiteral("Workflow has an empty or duplicate id: %1").arg(definition.id);
             return false;
         }
+        const QJsonValue recoveryValue = workflowObject.value(QStringLiteral("recovery"));
+        if (!recoveryValue.isUndefined())
+        {
+            const QJsonObject recovery = recoveryValue.toObject();
+            const QString kind = recovery.value(QStringLiteral("kind")).toString();
+            if (!recoveryValue.isObject()
+                || (kind != QStringLiteral("loadApplication")
+                    && kind != QStringLiteral("manualBootloader")))
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_INVALID_RECOVERY: %1 has an unknown recovery kind")
+                        .arg(definition.id);
+                return false;
+            }
+            definition.recovery.kind = kind == QStringLiteral("loadApplication")
+                ? RecoveryKind::LoadApplication : RecoveryKind::ManualBootloader;
+            const QJsonValue timeout = recovery.value(QStringLiteral("timeoutMs"));
+            const QJsonValue pollInterval = recovery.value(QStringLiteral("pollIntervalMs"));
+            if ((!timeout.isUndefined() && (!timeout.isDouble()
+                    || timeout.toDouble() < 1 || timeout.toDouble() > 120000
+                    || timeout.toDouble() != int(timeout.toDouble())))
+                || (!pollInterval.isUndefined() && (!pollInterval.isDouble()
+                    || pollInterval.toDouble() < 1 || pollInterval.toDouble() > 10000
+                    || pollInterval.toDouble() != int(pollInterval.toDouble()))))
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_INVALID_RECOVERY: %1 has invalid timeout or poll interval")
+                        .arg(definition.id);
+                return false;
+            }
+            definition.recovery.timeoutMs = timeout.toInt(30000);
+            definition.recovery.pollIntervalMs = pollInterval.toInt(500);
+        }
 
         bool uuidConfirmed = false;
         const QJsonArray steps = workflowObject.value(QStringLiteral("steps")).toArray();
@@ -303,11 +336,17 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
         int pagePlanIndex = -1;
         int verifyIndex = -1;
         int bootloaderIndex = -1;
+        bool mayLeaveBootloader = false;
         int applicationWaitIndex = -1;
         int versionVerifyIndex = -1;
         for (int index = 0; index < definition.steps.size(); ++index)
         {
             const QString& op = definition.steps.at(index).op;
+            mayLeaveBootloader = mayLeaveBootloader
+                || op == QStringLiteral("device.enterBootloader")
+                || op == QStringLiteral("device.disableLoadApplication")
+                || op == QStringLiteral("device.disableApplicationLoad")
+                || op == QStringLiteral("flash.preflight");
             if (op == QStringLiteral("firmware.flash") && flashIndex < 0)
                 flashIndex = index;
             else if (op == QStringLiteral("firmware.validateArtifact")
@@ -347,6 +386,21 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
                     "verification after application reappears").arg(definition.id);
             return false;
         }
+        if (flashIndex >= 0
+            && definition.recovery.kind != RecoveryKind::ManualBootloader)
+        {
+            if (error)
+                *error = QStringLiteral("CONFIG_MISSING_RECOVERY: %1 requires manual bootloader recovery")
+                    .arg(definition.id);
+            return false;
+        }
+        if (mayLeaveBootloader && definition.recovery.kind == RecoveryKind::None)
+        {
+            if (error)
+                *error = QStringLiteral("CONFIG_MISSING_RECOVERY: %1 can leave the device in bootloader")
+                    .arg(definition.id);
+            return false;
+        }
         for (int index = 0; index < definition.steps.size(); ++index)
         {
             const QString& writeOp = definition.steps.at(index).op;
@@ -356,6 +410,13 @@ bool WorkflowRepository::load(const QString& fileName, QString* error)
                     ? QStringLiteral("serialNumber") : QString();
             if (registerName.isEmpty())
                 continue;
+            if (definition.recovery.kind != RecoveryKind::LoadApplication)
+            {
+                if (error)
+                    *error = QStringLiteral("CONFIG_MISSING_RECOVERY: %1 requires load-application recovery")
+                        .arg(definition.id);
+                return false;
+            }
             bool verified = false;
             for (int next = index + 1; next < definition.steps.size(); ++next)
             {
@@ -693,8 +754,7 @@ bool WorkflowExecution::runOperationWithRetry(const DeviceIdentity& identity,
 void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
 {
     if (!mContext.applicationLoadingDisabled
-        || (mAction.id != QStringLiteral("device.productionDate.update")
-            && mAction.id != QStringLiteral("device.serialNumber.update")))
+        || mDefinition.recovery.kind != RecoveryKind::LoadApplication)
         return;
 
     const DeviceIdentity identity = device.identity();
@@ -718,7 +778,8 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
     DeviceIdentity found;
     QString waitError;
     QString waitRaw;
-    if (!device.waitForDeviceIdentity(expected, 30000, 500, &found, &waitError, &waitRaw))
+    if (!device.waitForDeviceIdentity(expected, mDefinition.recovery.timeoutMs,
+            mDefinition.recovery.pollIntervalMs, &found, &waitError, &waitRaw))
     {
         if (!waitRaw.isEmpty())
             transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), waitRaw));
@@ -1498,8 +1559,7 @@ bool WorkflowExecution::executeDeviceStep(DeviceBase& device, const WorkflowStep
         device.updateIdentity(updated);
     }
     else if (step.op == QStringLiteral("device.reset")
-        && (mAction.id == QStringLiteral("device.productionDate.update")
-            || mAction.id == QStringLiteral("device.serialNumber.update")))
+        && mDefinition.recovery.kind == RecoveryKind::LoadApplication)
     {
         mContext.applicationLoadingDisabled = true;
     }

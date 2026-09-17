@@ -238,6 +238,9 @@ Workflow — упорядоченный массив шагов. Пример:
   "id": "device.application.load",
   "steps": [
     {
+      "op": "device.ensureUuid"
+    },
+    {
       "op": "device.loadApplicationNoReply",
       "message": "load main application, response is not expected"
     },
@@ -262,6 +265,14 @@ Workflow — упорядоченный массив шагов. Пример:
 - `retry`, `retryLoadAttempts`, `retryDelayMs` — повторные попытки;
 - `skipIfState` — пропуск шага в заданном состоянии;
 - `valueFrom` — значение из контекста операции.
+
+Для сценариев изменения даты или номера задайте `"recovery":
+{"kind":"loadApplication","timeoutMs":30000,"pollIntervalMs":500}`.
+Если ошибка возникнет после входа в загрузчик, исполнитель попытается вернуть
+основное приложение. Для сценариев прошивки задайте
+`"recovery":{"kind":"manualBootloader"}`: после возможной частичной записи
+автоматический запуск приложения небезопасен. Отсутствующий или неизвестный
+recovery отклоняется при загрузке таких сценариев.
 
 Используйте только операции, уже реализованные в C++ или присутствующие в текущем
 `workflows.json`. Неизвестная операция завершит workflow ошибкой. Прошивочные

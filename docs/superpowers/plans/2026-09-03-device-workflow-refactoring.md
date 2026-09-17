@@ -466,7 +466,7 @@ UI показывает `safeMessage`, а журнал сохраняет код
 - [ ] Формально описать schema actions, profiles и workflows.
 - [x] Разрешать `op` через `OperationRegistry` при загрузке.
 - [ ] Проверять аргументы, состояния, capabilities, timeout и retry.
-- [ ] Компилировать recovery plan для опасных workflow.
+- [x] Компилировать recovery plan для опасных workflow из декларации в JSON.
 - [ ] Показывать в UI только actions с успешно скомпилированным планом.
 - [x] Реализовать атомарный reload: либо принимается весь новый набор, либо
       продолжает действовать старый.
