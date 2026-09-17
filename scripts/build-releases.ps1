@@ -10,10 +10,12 @@ $sourceRoot = Join-Path $repositoryRoot "app"
 $buildRoot = Join-Path $repositoryRoot "build"
 $releasesRoot = Join-Path $repositoryRoot "releases"
 $resourceGeneratorScript = Join-Path $PSScriptRoot "generate-embedded-resources.ps1"
+$preflightScript = Join-Path $PSScriptRoot "check-release-config.ps1"
 
 # Firmware configuration is prepared explicitly by sync-firmware-config.ps1.
 # Do not update it here: the release must embed the reviewed files exactly as
 # they exist when the build starts.
+& $preflightScript
 & $resourceGeneratorScript
 
 $qmakeCommand = Get-Command qmake.exe -ErrorAction SilentlyContinue
