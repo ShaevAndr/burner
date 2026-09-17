@@ -27,6 +27,7 @@ signals:
     void progressChanged(int percent);
     void stageChanged(QString operation, QString stage);
     void stepCompleted(QString operation);
+    void recoveryEvent(QString state);
     void failureStage(QString operation, QString stage);
     void definitionSelected(QString workflowId, QString version);
 

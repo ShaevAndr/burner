@@ -899,6 +899,7 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
     device.catalogId = QStringLiteral("boc.v6");
     device.name = QStringLiteral("БОЦ-В-6");
     device.description = QStringLiteral("Блок обработки цифровой (БОЦ-В-6)");
+    device.uuid = QStringLiteral("EXPECTED-UUID");
     device.endpoint = QStringLiteral("192.168.1.254:2001");
     device.modbusAddress = 1;
     device.productionDateRegister = 9;
@@ -924,6 +925,7 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
         qPrintable(workflowError));
     WorkflowRunner runner(&workflows);
     QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
+    QSignalSpy recoverySpy(&runner, &WorkflowRunner::recoveryEvent);
 
     QVERIFY(!runner.run(action, {deviceObject}, QVariantMap{
         {QStringLiteral("productionDate"), QDate(2026, 8, 25)},
@@ -934,6 +936,9 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
     QCOMPARE(transport->noReplyWrites.first().value, qint32(1));
     QCOMPARE(transport->waitForIdentityCalls, 1);
     QCOMPARE(deviceObject->identity().state, QStringLiteral("application"));
+    QCOMPARE(recoverySpy.size(), 2);
+    QCOMPARE(recoverySpy.at(0).at(0).toString(), QStringLiteral("started"));
+    QCOMPARE(recoverySpy.at(1).at(0).toString(), QStringLiteral("succeeded"));
 
     bool sawRecovery = false;
     for (const QList<QVariant>& row : logSpy)
@@ -1250,6 +1255,7 @@ void DeviceWorkbenchTest::workflowStopsOnRegisterReadbackMismatch()
     identity.serialNumberRegister = 10;
     auto transport = std::make_shared<FakeDeviceTransport>();
     transport->readOverrides.insert(10, 914);
+    transport->discoveredIdentity.uuid = QStringLiteral("DIFFERENT-UUID");
     DeviceFactory factory(transport);
     const auto device = factory.create(identity);
 
@@ -1261,6 +1267,7 @@ void DeviceWorkbenchTest::workflowStopsOnRegisterReadbackMismatch()
     action.id = QStringLiteral("device.serialNumber.update");
     action.workflow = QStringLiteral("device.serial-number.update");
     WorkflowRunner runner(&workflows);
+    QSignalSpy recoverySpy(&runner, &WorkflowRunner::recoveryEvent);
     QVERIFY(!runner.run(action, {device}, QVariantMap{
         {QStringLiteral("serialNumber"), 915},
         {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
@@ -1269,7 +1276,11 @@ void DeviceWorkbenchTest::workflowStopsOnRegisterReadbackMismatch()
     QCOMPARE(device->identity().serialNumber, QStringLiteral("902"));
     QCOMPARE(transport->reads.size(), 1);
     QCOMPARE(transport->reads.first().index, quint16(10));
-    QVERIFY(!transport->noReplyWrites.isEmpty()); // Recovery returns to the application.
+    QVERIFY(!transport->noReplyWrites.isEmpty()); // Recovery was attempted.
+    QCOMPARE(device->identity().state, QStringLiteral("bootloader"));
+    QCOMPARE(recoverySpy.size(), 2);
+    QCOMPARE(recoverySpy.at(0).at(0).toString(), QStringLiteral("started"));
+    QCOMPARE(recoverySpy.at(1).at(0).toString(), QStringLiteral("failed"));
 }
 
 void DeviceWorkbenchTest::applicationLoadActionIsAvailableForBootloader()
@@ -2464,6 +2475,19 @@ void DeviceWorkbenchTest::executionJournalRecoversInterruptedDevice()
     completedStep.insert(QStringLiteral("completedOperationId"), QStringLiteral("firmware.verify"));
     completedStep.insert(QStringLiteral("event"), QStringLiteral("stepCompleted"));
     QVERIFY2(journal.append(completedStep, &error), qPrintable(error));
+    QJsonObject recoveryStarted = running;
+    recoveryStarted.insert(QStringLiteral("executionId"), QStringLiteral("device-4"));
+    recoveryStarted.insert(QStringLiteral("operationId"), QStringLiteral("workflow.recovery"));
+    recoveryStarted.insert(QStringLiteral("event"), QStringLiteral("recoveryStarted"));
+    QVERIFY2(journal.append(recoveryStarted, &error), qPrintable(error));
+    QJsonObject recoverySucceeded = recoveryStarted;
+    recoverySucceeded.insert(QStringLiteral("executionId"), QStringLiteral("device-5"));
+    recoverySucceeded.insert(QStringLiteral("event"), QStringLiteral("recoverySucceeded"));
+    QVERIFY2(journal.append(recoverySucceeded, &error), qPrintable(error));
+    QJsonObject recoveryFailed = recoveryStarted;
+    recoveryFailed.insert(QStringLiteral("executionId"), QStringLiteral("device-6"));
+    recoveryFailed.insert(QStringLiteral("event"), QStringLiteral("recoveryFailed"));
+    QVERIFY2(journal.append(recoveryFailed, &error), qPrintable(error));
 
     QFile tornLine(journal.filePath());
     QVERIFY(tornLine.open(QIODevice::WriteOnly | QIODevice::Append));
@@ -2471,7 +2495,7 @@ void DeviceWorkbenchTest::executionJournalRecoversInterruptedDevice()
     tornLine.close();
 
     const QVector<QJsonObject> recovered = journal.recoverInterrupted(&error);
-    QCOMPARE(recovered.size(), 2);
+    QCOMPARE(recovered.size(), 5);
     QCOMPARE(recovered.first().value(QStringLiteral("executionId")).toString(),
         QStringLiteral("device-1"));
     QCOMPARE(recovered.first().value(QStringLiteral("operationId")).toString(),
@@ -2481,9 +2505,17 @@ void DeviceWorkbenchTest::executionJournalRecoversInterruptedDevice()
     QCOMPARE(recovered.first().value(QStringLiteral("inFlightOperationId")).toString(),
         QStringLiteral("firmware.flash"));
     QVERIFY(recovered.first().value(QStringLiteral("flashMayHaveStarted")).toBool());
-    QCOMPARE(recovered.last().value(QStringLiteral("executionId")).toString(),
+    QCOMPARE(recovered.at(1).value(QStringLiteral("executionId")).toString(),
         QStringLiteral("device-3"));
-    QVERIFY(recovered.last().value(QStringLiteral("inFlightOperationId")).toString().isEmpty());
+    QVERIFY(recovered.at(1).value(QStringLiteral("inFlightOperationId")).toString().isEmpty());
+    QCOMPARE(recovered.at(2).value(QStringLiteral("recoveryState")).toString(),
+        QStringLiteral("recoveryStarted"));
+    QCOMPARE(recovered.at(2).value(QStringLiteral("inFlightOperationId")).toString(),
+        QStringLiteral("workflow.recovery"));
+    QCOMPARE(recovered.at(3).value(QStringLiteral("recoveryState")).toString(),
+        QStringLiteral("recoverySucceeded"));
+    QCOMPARE(recovered.at(4).value(QStringLiteral("recoveryState")).toString(),
+        QStringLiteral("recoveryFailed"));
     QVERIFY(journal.recoverInterrupted(&error).isEmpty());
     QFile journalFile(journal.filePath());
     QVERIFY(journalFile.open(QIODevice::ReadOnly));

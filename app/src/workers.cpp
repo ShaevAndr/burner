@@ -314,6 +314,17 @@ void WorkflowWorker::run()
                     completedOperationId = operation;
                     record(QStringLiteral("stepCompleted"), operation);
                 }, Qt::DirectConnection);
+            connect(&runner, &WorkflowRunner::recoveryEvent, &runner,
+                [&record](const QString& state) {
+                    const QString event = state == QStringLiteral("started")
+                        ? QStringLiteral("recoveryStarted")
+                        : state == QStringLiteral("succeeded")
+                            ? QStringLiteral("recoverySucceeded")
+                            : QStringLiteral("recoveryFailed");
+                    record(event, QStringLiteral("workflow.recovery"),
+                        state == QStringLiteral("failed")
+                            ? QStringLiteral("RECOVERY_FAILED") : QString());
+                }, Qt::DirectConnection);
             connect(&runner, &WorkflowRunner::failureStage, &runner,
                 [&result](const QString& operation, const QString& stage) {
                     if (!result.failureCaptured)

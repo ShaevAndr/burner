@@ -207,13 +207,23 @@ MainWindow::MainWindow(ServiceContainer* services, QWidget* parent) :
         const bool flashMayHaveStarted = event.value(QStringLiteral("flashMayHaveStarted")).toBool();
         const QString completed = event.value(QStringLiteral("completedOperationId")).toString();
         const QString inFlight = event.value(QStringLiteral("inFlightOperationId")).toString();
+        const QString recoveryState = event.value(QStringLiteral("recoveryState")).toString();
+        QString advice;
+        if (recoveryState == QStringLiteral("recoveryStarted"))
+            advice = QStringLiteral("Восстановление приложения было прервано; проверьте режим устройства и UUID перед повтором.");
+        else if (recoveryState == QStringLiteral("recoverySucceeded"))
+            advice = QStringLiteral("Приложение было восстановлено, но исходное задание не завершилось; проверьте устройство перед повтором.");
+        else if (recoveryState == QStringLiteral("recoveryFailed"))
+            advice = QStringLiteral("Автоматическое восстановление не удалось; проверьте устройство вручную перед повтором.");
+        else if (flashMayHaveStarted)
+            advice = QStringLiteral("Запись flash могла начаться; проверьте устройство в загрузчике перед повтором.");
+        else
+            advice = QStringLiteral("Запись flash не начиналась; проверьте состояние устройства перед повтором.");
         appendLog(QStringLiteral("Прерванное задание %1, устройство %2, последний завершённый этап %3, незавершённый этап %4. %5")
             .arg(event.value(QStringLiteral("jobId")).toString(), deviceId,
                 completed.isEmpty() ? QStringLiteral("нет") : completed,
                 inFlight.isEmpty() ? QStringLiteral("нет") : inFlight,
-                flashMayHaveStarted
-                    ? QStringLiteral("Запись flash могла начаться; проверьте устройство в загрузчике перед повтором.")
-                    : QStringLiteral("Запись flash не начиналась; проверьте состояние устройства перед повтором.")));
+                advice));
     }
 }
 

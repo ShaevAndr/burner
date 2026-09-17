@@ -24,6 +24,7 @@ bool appendLocked(const QString& path, QJsonObject event, QString* error)
         QStringLiteral("workflowId"), QStringLiteral("workflowVersion"),
         QStringLiteral("operationId"), QStringLiteral("completedOperationId"),
         QStringLiteral("inFlightOperationId"),
+        QStringLiteral("recoveryState"),
         QStringLiteral("event"),
         QStringLiteral("errorCode"), QStringLiteral("flashMayHaveStarted")
     };
@@ -120,11 +121,16 @@ QVector<QJsonObject> ExecutionJournal::recoverInterrupted(QString* error) const
         QJsonObject event = lastEvent.value(executionId);
         const QString state = event.value(QStringLiteral("event")).toString();
         if (state != QStringLiteral("started") && state != QStringLiteral("stage")
-            && state != QStringLiteral("stepCompleted"))
+            && state != QStringLiteral("stepCompleted")
+            && state != QStringLiteral("recoveryStarted")
+            && state != QStringLiteral("recoverySucceeded")
+            && state != QStringLiteral("recoveryFailed"))
             continue;
         event.insert(QStringLiteral("inFlightOperationId"),
-            state == QStringLiteral("stage")
+            state == QStringLiteral("stage") || state == QStringLiteral("recoveryStarted")
                 ? event.value(QStringLiteral("operationId")).toString() : QString());
+        if (state.startsWith(QStringLiteral("recovery")))
+            event.insert(QStringLiteral("recoveryState"), state);
         event.insert(QStringLiteral("event"), QStringLiteral("interrupted"));
         event.insert(QStringLiteral("errorCode"), QStringLiteral("EXECUTION_INTERRUPTED"));
         if (!appendLocked(mFilePath, event, error))

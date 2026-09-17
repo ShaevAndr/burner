@@ -757,6 +757,9 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
         || mDefinition.recovery.kind != RecoveryKind::LoadApplication)
         return;
 
+    if (mCallbacks.recoveryEvent)
+        mCallbacks.recoveryEvent(QStringLiteral("started"));
+
     const DeviceIdentity identity = device.identity();
     log(QStringLiteral("[%1] operation failed in bootloader; restoring main application")
         .arg(identity.typeHex()));
@@ -785,6 +788,17 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
             transportLog(QStringLiteral("[%1] %2").arg(identity.typeHex(), waitRaw));
         log(QStringLiteral("[%1] main application recovery failed: %2")
             .arg(identity.typeHex(), waitError));
+        if (mCallbacks.recoveryEvent)
+            mCallbacks.recoveryEvent(QStringLiteral("failed"));
+        return;
+    }
+    if (identity.uuid.isEmpty()
+        || found.uuid.compare(identity.uuid, Qt::CaseInsensitive) != 0)
+    {
+        log(QStringLiteral("[%1] main application recovery found a different UUID")
+            .arg(identity.typeHex()));
+        if (mCallbacks.recoveryEvent)
+            mCallbacks.recoveryEvent(QStringLiteral("failed"));
         return;
     }
     if (!waitRaw.isEmpty())
@@ -804,6 +818,8 @@ void WorkflowExecution::restoreApplicationAfterFailure(DeviceBase& device)
     mContext.applicationLoadingDisabled = false;
     log(QStringLiteral("[%1] main application restored after failed operation")
         .arg(updated.typeHex()));
+    if (mCallbacks.recoveryEvent)
+        mCallbacks.recoveryEvent(QStringLiteral("succeeded"));
 }
 
 bool WorkflowExecution::executeRuntimeStep(DeviceBase& device, const WorkflowStep& step)

@@ -88,6 +88,9 @@ bool WorkflowRunner::run(const ActionSpec& action, const QVector<std::shared_ptr
     callbacks.stepCompleted = [this](const QString& operation) {
         emit stepCompleted(operation);
     };
+    callbacks.recoveryEvent = [this](const QString& state) {
+        emit recoveryEvent(state);
+    };
     callbacks.processEvents = []() {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
     };

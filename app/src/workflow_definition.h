@@ -49,6 +49,7 @@ struct WorkflowCallbacks
     std::function<void(int)> progressChanged;
     std::function<void(const QString&, const QString&)> stageChanged;
     std::function<void(const QString&)> stepCompleted;
+    std::function<void(const QString&)> recoveryEvent;
     std::function<void()> processEvents;
     std::function<bool()> shouldCancel;
 };
