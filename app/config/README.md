@@ -11,6 +11,8 @@
 
 JSON не поддерживает комментарии. Перед изменением рекомендуется сохранить копию
 рабочего файла и менять за один раз только одну логическую часть.
+Отступы, переносы строк и порядок полей объекта свободные: проверка сборки
+сравнивает значения, а не текстовое оформление JSON.
 
 ## Откуда загружается конфигурация
 
@@ -281,13 +283,11 @@ workflow должны сохранять порядок проверки арт�
 
 ## Проверка изменений
 
-Проверить синтаксис всех JSON-файлов в PowerShell:
+До сборки проверить синтаксис JSON, связи действий со сценариями и SHA-256
+прошивок:
 
 ```powershell
-Get-ChildItem .\app\config\*.json | ForEach-Object {
-    Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json | Out-Null
-    Write-Host "OK: $($_.Name)"
-}
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-release-config.ps1
 ```
 
 После проверки пересобрать, например, внутреннюю редакцию:

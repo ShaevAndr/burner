@@ -223,6 +223,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-firmware-
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-firmware-config.ps1 -Check
 ```
 
+`sync-firmware-config.ps1 -Check` проверяет точное совпадение файла с результатом
+генератора, включая оформление. Для проверки вручную отредактированного JSON
+без требования к отступам используйте `scripts/check-release-config.ps1` или
+сборку через tool.
+
 ## Журналы
 
 Журналы создаются в локальном каталоге данных текущего пользователя:

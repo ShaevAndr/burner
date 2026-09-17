@@ -30,11 +30,15 @@ if (-not (Test-Path -LiteralPath $qmake)) {
 
 $qtBin = Split-Path -Parent $qmake
 $deployTool = Join-Path $qtBin "windeployqt.exe"
+$makeCommand = Get-Command mingw32-make.exe -ErrorAction SilentlyContinue
 $makeCandidates = @(
     (Join-Path $qtBin "mingw32-make.exe"),
     "C:\Qt\Qt5.12.12\Tools\mingw730_64\bin\mingw32-make.exe"
 )
-$make = $makeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($makeCommand) {
+    $makeCandidates = @($makeCommand.Source) + $makeCandidates
+}
+$make = $makeCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $make) {
     throw "mingw32-make.exe was not found."
 }
