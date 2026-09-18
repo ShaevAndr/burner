@@ -108,12 +108,10 @@ bool ActionRepository::validateAgainstProfiles(
         {
             if (!profile)
                 continue;
-            const QSet<QString> capabilities(profile->capabilities.cbegin(),
-                profile->capabilities.cend());
             bool supportsAction = true;
             for (const QString& required : action.requiredCapabilities)
             {
-                if (!capabilities.contains(required))
+                if (!profile->capabilities.contains(required))
                 {
                     supportsAction = false;
                     break;
@@ -210,10 +208,9 @@ bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceBas
     if (!action.allowedStates.isEmpty()
         && !action.allowedStates.contains(device.identity().state))
         return false;
-    const QSet<QString> capabilities(profile->capabilities.cbegin(), profile->capabilities.cend());
     for (const QString& required : action.requiredCapabilities)
     {
-        if (!capabilities.contains(required))
+        if (!profile->capabilities.contains(required))
             return false;
     }
     return true;
@@ -230,10 +227,9 @@ bool ActionRepository::isActionAllowed(const ActionSpec& action, const DeviceIde
     if (!action.allowedStates.isEmpty() && !action.allowedStates.contains(device.state))
         return false;
 
-    const QSet<QString> caps(device.capabilities.cbegin(), device.capabilities.cend());
     for (const QString& required : action.requiredCapabilities)
     {
-        if (!caps.contains(required))
+        if (!device.capabilities.contains(required))
             return false;
     }
     return true;

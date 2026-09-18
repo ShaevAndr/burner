@@ -54,8 +54,27 @@ function Assert-ArtifactSource {
         throw "Firmware artifact is missing or outside app/flash: $relativePath"
     }
     $expectedHash = [string]$Artifact.sha256
-    if ($expectedHash -notmatch '^[0-9A-Fa-f]{64}$' -or
-        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $expectedHash) {
+    if ($expectedHash -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "Firmware artifact has an invalid SHA-256 in catalog: $relativePath"
+    }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $expectedHash) {
+        if ([IO.Path]::GetExtension($path) -ieq ".hex") {
+            $bytes = [IO.File]::ReadAllBytes($path)
+            $text = [Text.Encoding]::ASCII.GetString($bytes)
+            $normalized = $text.Replace("`r`n", "`n")
+            if ($normalized -cne $text) {
+                $sha256 = [Security.Cryptography.SHA256]::Create()
+                try {
+                    $normalizedHash = [BitConverter]::ToString(
+                        $sha256.ComputeHash([Text.Encoding]::ASCII.GetBytes($normalized))) -replace '-', ''
+                } finally {
+                    $sha256.Dispose()
+                }
+                if ($normalizedHash -ieq $expectedHash) {
+                    throw "Firmware artifact has CRLF line endings but catalog expects LF: $relativePath. Restore LF line endings as specified in .gitattributes."
+                }
+            }
+        }
         throw "Firmware artifact SHA-256 differs from catalog: $relativePath"
     }
 }

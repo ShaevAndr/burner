@@ -356,7 +356,6 @@ private slots:
     void outOfRangeProductionDateStopsBeforeReset();
     void workflowWritesProductionDateRegistersInOrder();
     void workflowRestoresApplicationAfterProductionDateFailure();
-    void workflowSkipsProtectedSettingsWithoutFactoryKey();
     void workflowWorkerRunsDevicesInParallel();
     void workflowWorkerHonorsParallelLimit_data();
     void workflowWorkerHonorsParallelLimit();
@@ -871,8 +870,7 @@ void DeviceWorkbenchTest::workflowWritesProductionDateRegistersInOrder()
     WorkflowRunner runner(&workflows);
 
     QVERIFY(runner.run(action, {deviceObject}, QVariantMap{
-        {QStringLiteral("productionDate"), QDate(2026, 7, 16)},
-        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
+        {QStringLiteral("productionDate"), QDate(2026, 7, 16)}
     }));
 
     QCOMPARE(transport->writes.size(), 2);
@@ -928,8 +926,7 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
     QSignalSpy recoverySpy(&runner, &WorkflowRunner::recoveryEvent);
 
     QVERIFY(!runner.run(action, {deviceObject}, QVariantMap{
-        {QStringLiteral("productionDate"), QDate(2026, 8, 25)},
-        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
+        {QStringLiteral("productionDate"), QDate(2026, 8, 25)}
     }));
     QCOMPARE(transport->writeAttempts, 5);
     QCOMPARE(transport->noReplyWrites.size(), 1);
@@ -947,53 +944,6 @@ void DeviceWorkbenchTest::workflowRestoresApplicationAfterProductionDateFailure(
             sawRecovery = true;
     }
     QVERIFY2(sawRecovery, "Failed service-data update must restore the main application");
-}
-
-void DeviceWorkbenchTest::workflowSkipsProtectedSettingsWithoutFactoryKey()
-{
-    DeviceIdentity identity;
-    identity.type = 0x0A02;
-    identity.version = 0x0001;
-    identity.endpoint = QStringLiteral("192.168.1.254:2001");
-    identity.productionDateRegister = 9;
-    identity.serialNumberRegister = 10;
-
-    auto transport = std::make_shared<FakeDeviceTransport>();
-    DeviceFactory factory(transport);
-    const std::shared_ptr<DeviceBase> device = factory.create(identity);
-    QVERIFY(device);
-
-    WorkflowRepository workflows;
-    QString error;
-    QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &error),
-        qPrintable(error));
-    WorkflowRunner runner(&workflows);
-    QSignalSpy logSpy(&runner, &WorkflowRunner::logMessage);
-
-    ActionSpec productionDateAction;
-    productionDateAction.id = QStringLiteral("device.productionDate.update");
-    QVERIFY(runner.run(productionDateAction, {device},
-        QVariantMap{{QStringLiteral("productionDate"), QDate(2026, 8, 25)}}));
-
-    ActionSpec serialNumberAction;
-    serialNumberAction.id = QStringLiteral("device.serialNumber.update");
-    QVERIFY(runner.run(serialNumberAction, {device},
-        QVariantMap{{QStringLiteral("serialNumber"), 11},
-            {QStringLiteral("factorySettingsKey"), QString()}}));
-
-    QCOMPARE(transport->resetCalls, 0);
-    QCOMPARE(transport->writes.size(), 0);
-    QCOMPARE(transport->noReplyWrites.size(), 0);
-    QCOMPARE(transport->waitForIdentityCalls, 0);
-
-    int skippedMessages = 0;
-    for (const QList<QVariant>& row : logSpy)
-    {
-        if (!row.isEmpty() && row.first().toString().contains(
-                QStringLiteral("factory settings key is empty")))
-            ++skippedMessages;
-    }
-    QCOMPARE(skippedMessages, 2);
 }
 
 void DeviceWorkbenchTest::workflowWorkerRunsDevicesInParallel()
@@ -1227,10 +1177,9 @@ void DeviceWorkbenchTest::workflowWritesSerialNumberRegisterInBootloader()
     QVERIFY2(workflows.load(sourceConfigPath(QStringLiteral("config/workflows.json")), &workflowError), qPrintable(workflowError));
     WorkflowRunner runner(&workflows);
 
-    runner.run(action, {deviceObject}, QVariantMap{
-        {QStringLiteral("serialNumber"), 915},
-        {QStringLiteral("factorySettingsKey"), qint32(0x12345678)}
-    });
+    QVERIFY(runner.run(action, {deviceObject}, QVariantMap{
+        {QStringLiteral("serialNumber"), 915}
+    }));
 
     QCOMPARE(transport->resetCalls, 0);
     QCOMPARE(transport->writes.size(), 2);
@@ -2795,13 +2744,11 @@ void DeviceWorkbenchTest::networkChangeSerialNumberBocV6()
         qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_SERIAL_EXPECTED")).trimmed();
     const QString targetText = QString::fromLocal8Bit(
         qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_SERIAL_TARGET")).trimmed();
-    const QString factorySettingsKey = QString::fromLocal8Bit(
-        qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_FACTORY_SETTINGS_KEY")).trimmed();
     const bool verifyOnly = qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_SERIAL_VERIFY_ONLY") == "1";
     if (endpoint.isEmpty() || expectedText.isEmpty() || targetText.isEmpty())
         QSKIP("Set endpoint, expected serial and target serial to run the destructive serial-number test");
-    if (!verifyOnly && factorySettingsKey.isEmpty())
-        QSKIP("Set DEVICE_WORKBENCH_NETWORK_BOCV6_FACTORY_SETTINGS_KEY for a protected write");
+    if (!verifyOnly && qgetenv("DEVICE_WORKBENCH_NETWORK_BOCV6_ALLOW_SERIAL_WRITE") != "1")
+        QSKIP("Set DEVICE_WORKBENCH_NETWORK_BOCV6_ALLOW_SERIAL_WRITE=1 to run the serial-number write test");
 
     bool expectedOk = false;
     bool targetOk = false;
@@ -2887,8 +2834,7 @@ void DeviceWorkbenchTest::networkChangeSerialNumberBocV6()
     });
 
     QVERIFY2(runner.run(action, {device}, QVariantMap{
-        {QStringLiteral("serialNumber"), targetSerial},
-        {QStringLiteral("factorySettingsKey"), factorySettingsKey}
+        {QStringLiteral("serialNumber"), targetSerial}
     }), "Serial-number workflow failed before identity refresh");
 
     DeviceIdentity refreshExpected = device->identity();

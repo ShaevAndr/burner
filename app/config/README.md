@@ -110,8 +110,8 @@ capability и ссылкой на workflow в `actions.json`, а в `workflows.j
 
 Для возможностей `device.productionDate.update` и `device.serialNumber.update`
 должны быть заданы соответственно `productionDateRegister` и
-`serialNumberRegister`. Эти операции дополнительно требуют рассчитанный
-`factorySettingsKey`. Если ключ отсутствует, приложение намеренно пропускает запись.
+`serialNumberRegister`. Приложение отправляет команду записи; доступ к
+защищённым настройкам проверяет само устройство и при отказе возвращает ошибку.
 
 ### Каталог прошивок
 
